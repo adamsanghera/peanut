@@ -1,0 +1,22 @@
+{
+  "name": "margin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Comment threads between humans and agents, anchored in documents that change",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./anchors/markdown-block": "./src/anchors/markdown-block.mjs",
+    "./anchors/whole": "./src/anchors/whole.mjs"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "markdown-it": "15.0.3"
+  }
+}
