@@ -18,8 +18,8 @@ apps build on.
   workarounds: line ranges on either side of a diff that follow their text
   through rebases, whole files, whole branches, and a branch's description.
   So does its own state, such as viewed files and stack membership.
-- **Comments live where the user wants them.** By default in one store in
-  the home folder, or in the project being worked on.
+- **Comments live where the user wants them.** By default in the app's
+  folder in the home folder, or in the project being worked on.
 
 ## Non-goals
 
@@ -35,20 +35,13 @@ apps build on.
 |---|---|---|---|
 | **app** | A namespace that registers document types, anchor types and its own tables | `mdview` | `diffview` |
 | **document** | One thing people comment on. It keeps its identity while its content changes | a `.md` file | a branch in a repo |
-| **document type** | What kind of document it is, named `<app>.<name>`. It says what a key means, how to read the document's content, and how to parse it | `mdview.doc` | `diffview.branch`, `diffview.stack`, `diffview.description` |
-| **key** | The app's string naming one document of a type, opaque to the core | `notes/plan.md` | `feat-x` |
+| **document type** | What kind of document it is, named `<app>.<name>`. It says what a document key means, how to read the document's content, and how to parse it | `mdview.doc` | `diffview.branch`, `diffview.stack`, `diffview.description` |
+| **document key** | The app's string naming one document of a type, opaque to the core | `notes/plan.md` | `feat-x` |
 | **revision** | The document's content as it read when someone looked at it: `v1`, `v2`, and so on. A new one is recorded only when the content changes | the file's text | the branch's patch, plus base and head |
-| **content type** | One way of parsing a revision's content. An anchor type reads one, and a document type says which ones it can produce | `markdown` | `diff`, and `markdown` for descriptions |
 | **anchor type** | A way of pinning a thread to part of a document and finding that part again in a later revision, named `<namespace>.<name>` | `markdown.block` | `diffview.lines`, `diffview.file`, `core.whole`, `markdown.block` |
 | **anchor** | One thread's pin, stored when the thread is made and never changed: JSON owned by its anchor type. It records *what* was commented on, such as a hash of the text | `{blockSha, ordinal}` | `{path, side, linesSha, ...}` |
-| **location** | Where an anchor is found in one particular revision, computed on every read and never stored. It says *where that text is now*. The UI highlights it and the CLI prints it | block 12, lines 40-44, under "How" | `src/a.js`, new side, lines 40-42 |
+| **anchor placement** | Where an anchor is placed in one revision: computed on every read, never stored. The UI highlights it and the CLI prints it | in v5: block 12, lines 40-44, under "How" | in v5: `src/a.js`, new side, lines 40-42 |
 | **thread**, **message**, **author**, **turn**, **batch** | As today in both apps | | |
-
-Anchor and location are separate because a thread outlives the revision it
-was made on. The anchor says "the paragraph that read *X*". The location
-says "in v5, that paragraph is block 12, lines 40-44". Computing the
-location afresh on every read is how a thread follows its text through
-edits and rebases.
 
 "Draft" is taken: in the code it already means a thread whose first message
 is still in the human's pending batch.
@@ -57,13 +50,13 @@ is still in the human's pending batch.
 
 | The core owns | Each app owns |
 |---|---|
-| documents, revisions, threads, messages | what a key means and how to read a document's content |
+| documents, revisions, threads, messages | what a document key means, and how to read and parse a document's content |
 | statuses and who may change them (agents suggest, humans resolve and reopen) | its document types and anchor types |
 | whose turn it is (`thread_facts`), the pending batch, sending it | its own tables, e.g. diffview's viewed files, stack members and description links |
-| finding each thread's location in a revision: current, carried or outdated | how a location looks: labels in the terminal, highlights on the page |
+| placing each thread's anchor in a revision: current, carried or outdated | how a placement looks: labels in the terminal, highlights on the page |
 | `wait`, its cursor, and change notification | which documents a CLI command covers |
 | the CLI verbs and their conventions (`-m`, `--from`, `--json`, `--human`) | the `add` verb's anchor flags, and any extra verbs (`describe`, `review`) |
-| where the store lives, and the config that says so | |
+| finding the store from the app's folder name, and the config that moves it | the folder's name (`.mdview`, `.diffview`) |
 | the comment API the server mounts | the rest of the server |
 
 ## Document types
@@ -72,10 +65,9 @@ is still in the human's pending batch.
 {
   name: "mdview.doc",
   noun: "doc",                          // in messages: "the whole doc"
-  contentTypes: ["markdown"],           // what parse() can return
-  anchorTypes: ["markdown.block", "core.whole"],   // each must read one of the content types
+  anchorTypes: ["markdown.block", "core.whole"],
   readContent(key) { return { content, meta } },  // as the document reads now; null when it is gone
-  parse(revision) { return { markdown: { source, blocks } } },   // keyed by content type
+  parse(revision) { return { markdown: { source, blocks } } },   // what its anchor types read
   displayName(key) { return "plan.md" },
 }
 ```
@@ -87,8 +79,12 @@ is still in the human's pending batch.
   content. So a rebase that leaves a branch's patch alone is not a new
   revision, as diffview behaves today.
 - `parse()` runs once per revision per process, and the result is cached.
-  A parsed value may hold functions that do work only when called:
-  diffview's `diff` content carries `fileText(path, side)`, which reads a
+  The core never looks inside it: it only hands it to anchor types. What
+  goes in it is an agreement between a document type and the anchor types
+  it lists. `markdown.block` reads `parsed.markdown`, so any document type
+  that offers it puts `{source, blocks}` there.
+- A parsed value may hold functions that do work only when called:
+  diffview's `parsed.diff` carries `fileText(path, side)`, which reads a
   blob from git only when a line anchor on unchanged lines asks for it.
 
 ## Anchor types
@@ -96,12 +92,11 @@ is still in the human's pending batch.
 ```js
 {
   name: "markdown.block",
-  reads: ["markdown"],                         // content types; checked against each document type that lists it
-  create(parsed, spec) { return { anchor, quote } },   // or throws AnchorError, worded for the user
-  locate(anchor, parsed) { return location ?? null },  // null: its text is gone from this revision
-  successor(anchor, from, to) { return location ?? null },   // optional: what an outdated anchor's text became
-  label(anchor, location, documentType) { return 'under "How"' },
-  excerpt(anchor, location, parsed) { return "..." },        // optional: source text for `show`
+  create(parsed, spec) { return { anchor, quote } },     // or throws AnchorError, worded for the user
+  place(anchor, parsed) { return placement ?? null },    // null: its text is gone from this revision
+  successor(anchor, from, to) { return placement ?? null },   // optional: what an outdated anchor's text became
+  label(anchor, placement, documentType) { return 'under "How"' },
+  excerpt(anchor, placement, parsed) { return "..." },        // optional: source text for `show`
 }
 ```
 
@@ -109,24 +104,24 @@ The core derives a thread's state, so every anchor type means the same thing
 by it:
 
 - **current**: the thread was made on this revision.
-- **carried**: made on an earlier revision, and `locate()` still finds its
+- **carried**: made on an earlier revision, and `place()` still places its
   anchor here.
-- **outdated**: `locate()` returns null here. The core locates the anchor in
+- **outdated**: `place()` returns null here. The core places the anchor in
   its own revision for `madeOn`, and asks `successor()` for `nowReads`.
 
 Anchor types are named by who defines them, not who uses them, so apps can
 share them:
 
-- `core.whole`: the whole document. Reads nothing and always attaches. It
+- `core.whole`: the whole document. Reads nothing and is always placed. It
   replaces diffview's "whole branch" threads, and is how mdview could offer
   comments on a doc as a whole.
 - `markdown.block`: today's identical `blocks.mjs`, plus the
-  `successor()` both stores copy. It reads `markdown` content, which is
+  `successor()` both stores copy. It reads `parsed.markdown`, which is
   `{source, blocks}`. Apps keep their own markdown-it setup and hand the core
   tokens, because which plugins run changes the tokens, and so the blocks'
   hashes.
-- `diffview.lines` and `diffview.file` stay in diffview. They read `diff`
-  content, which the core does not define.
+- `diffview.lines` and `diffview.file` stay in diffview. They read
+  `parsed.diff`, which only diffview defines.
 
 ## How the apps map onto it
 
@@ -149,18 +144,30 @@ the core needs no idea of related documents.
 
 ## Where comments are stored
 
-Comments are stored in a SQLite file. Which file depends on where the work
-is, and the first rule that matches wins:
+Each app names its folder, and peanut's store is a SQLite file in it,
+beside whatever else the app keeps there (diffview's logs and server
+records, for one). An app registers `folder: "diffview"`, and peanut finds
+the folder from where the work is. For diffview the first rule that matches
+wins:
 
-1. `PEANUT_HOME`, when set.
-2. **A project store**: the nearest `.peanut/` folder above the document
+1. `DIFFVIEW_HOME`, when set.
+2. **A project folder**: the nearest `.diffview/` folder above the document
    (for mdview, the doc's folder; for diffview, the repo's worktree root).
-   To keep a project's comments in the project, run `mkdir .peanut`.
-3. `store` in `~/.config/peanut/config.json`.
-4. `~/.peanut`.
+   To keep a project's comments in the project, run `mkdir .diffview`.
+3. `home` in `~/.config/diffview/config.json`.
+4. `~/.diffview`.
 
-In a project store, keys are relative to the folder holding `.peanut/`, so
-the project can move. In the home store they are absolute: an mdview key is
+The file keeps today's name, `diffview.sqlite3`, so both apps' existing
+stores migrate in place.
+
+Two apps can share a store by naming the same folder. Neither does by
+default, because nothing needs it now that each app's CLI covers only its
+own documents. Nesting peanut's own folder inside the app's
+(`.mdview/.peanut/`) buys nothing: peanut's tables are already set apart
+from the app's by their names.
+
+In a project folder, document keys are relative to the folder holding it, so
+the project can move. In the home folder they are absolute: an mdview key is
 the doc's absolute path, and a diffview key is `<git common dir>#<branch>`,
 so every worktree of a repo shares its branches' threads.
 
@@ -189,9 +196,9 @@ migrations (namespace, version)
 - **Anchors as JSON.** No core query filters on an anchor's fields. An app
   that needs to, such as diffview counting threads per file, does it in JS
   or with `json_extract`.
-- **Moving the old stores over.** On first open, the home store imports
-  `~/.mdview` and `~/.diffview` when they exist and leaves them in place.
-  Thread ids are renumbered, so ids printed before the move are stale.
+- **Moving the old stores over.** Each app's last migration under its own
+  schema copies its tables into peanut's, in the same file, and keeps every
+  thread id. A backup of the file is taken first.
 
 ## Which documents a command covers
 
@@ -202,7 +209,7 @@ filter**: a list of conditions, where a document is included when it
 matches any of them.
 
 ```js
-// mdview: `mdview comments list notes/`, in a project store (in the home store, keys are absolute paths)
+// mdview: `mdview comments list notes/`, in a project folder (in the home folder, keys are absolute paths)
 [{ type: "mdview.doc", keyPrefix: "notes/" }]
 
 // diffview: `diffview comments wait` on a stack of feat-a and feat-b
@@ -229,7 +236,8 @@ The core exports the verbs: `list`, `show`, `reply`, `suggest-resolve`,
 
 - `filter(args, env)`: its arguments and flags, turned into a document
   filter.
-- `add`: its anchor flags, turned into `{type, key, anchorType, spec}`.
+- `add`: its anchor flags, turned into `{type, key, anchorType, spec}`,
+  where `key` is the document key.
 - `footer(thread)`: optional text after `show`, such as diffview's restack
   commands.
 
@@ -255,8 +263,8 @@ JSON:
   id, status, pending, waitingOn,
   document: { type, key, displayName },
   anchorType, state,                       // "current" | "carried" | "outdated"
-  location, label,                         // location: the anchor type's JSON; label: its words
-  madeOn: { seq, location }, nowReads,     // nowReads: a location, or null
+  placement, label,                        // placement: the anchor type's JSON; label: its words
+  madeOn: { seq, placement }, nowReads,    // nowReads: a placement, or null
   quote, createdAt, statusBy, statusAt,
   messages: [{ id, author, authorKind, session, body, revisionSeq, createdAt, sentAt, pending }],
 }
@@ -264,16 +272,16 @@ JSON:
 
 The shared front end (rail, cards, composer, the pending-batch bar) is the
 last step. Its seam is a client-side counterpart of each anchor type that
-maps a location to elements on the page.
+maps a placement to elements on the page.
 
 ## Plan
 
 1. This doc, then the shapes: types, registry, schema, the two built-in
    anchor types.
 2. The store, ported from diffview's, which already does more: `apply`, the
-   `--after` cursor, more than one anchor kind. With it, store resolution and
-   the config file.
-3. diffview on peanut, with its importer. This is the hard one, so it goes
+   `--after` cursor, more than one anchor kind. With it, finding the app's
+   folder and the config file.
+3. diffview on peanut, with its in-place migration. This is the hard one, so it goes
    first.
 4. mdview on peanut.
 5. The shared CLI verbs, used by both apps.
@@ -286,12 +294,18 @@ maps a location to elements on the page.
   their own states that map onto these three and drive more of the state
   machine, but not now.
 - **No cross-app CLI for now.** Agents use each app's comments CLI.
+- **One store per app by default**, in the app's own folder, at home or in a
+  project.
 
 ## Open questions
 
-1. **Project stores in git.** Should a project's `.peanut/` be committed?
-   SQLite is binary and does not merge, so if comments should travel with
-   the repo (to another machine, or a teammate), a project store needs a text
-   format, such as a JSON Lines file per document that only grows, with the
-   SQLite file as a local cache built from it. If `.peanut/` only keeps
-   comments next to the work, gitignored, SQLite is fine as is.
+1. **Project folders in git.** Should a project's `.diffview/` be
+   committed? SQLite has no text format on disk, so its file is binary and
+   does not merge. If comments should travel with the repo (to another
+   machine, or a teammate), the project folder needs text as the source of
+   truth: one JSON Lines file per thread, appended to and never rewritten,
+   with `merge=union` in `.gitattributes` so git keeps both sides' new lines
+   instead of conflicting. The SQLite file becomes a gitignored cache built
+   from those files. Ids then have to be unique without a shared counter,
+   such as ULIDs. If the folder only keeps comments next to the work,
+   gitignored, SQLite is fine as is.
