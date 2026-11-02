@@ -157,8 +157,10 @@ wins:
 3. `home` in `~/.config/diffview/config.json`.
 4. `~/.diffview`.
 
-The file keeps today's name, `diffview.sqlite3`, so both apps' existing
-stores migrate in place.
+peanut's file is `peanut.sqlite3`, beside the app's old store
+(`diffview.sqlite3`), not in place of it: the old file already has
+`threads`, `messages` and `versions` tables of its own shape, which the
+core's tables would collide with.
 
 Two apps can share a store by naming the same folder. Neither does by
 default, because nothing needs it now that each app's CLI covers only its
@@ -196,9 +198,11 @@ migrations (namespace, version)
 - **Anchors as JSON.** No core query filters on an anchor's fields. An app
   that needs to, such as diffview counting threads per file, does it in JS
   or with `json_extract`.
-- **Moving the old stores over.** Each app's last migration under its own
-  schema copies its tables into peanut's, in the same file, and keeps every
-  thread id. A backup of the file is taken first.
+- **Moving the old stores over.** An app's first migration attaches its old
+  file (`ATTACH '<folder>/diffview.sqlite3'`) and copies its rows into
+  peanut's tables, keeping every thread and message id, so ids agents have
+  already seen still work. The old file is never written, so it stays as the
+  backup.
 
 ## Which documents a command covers
 
@@ -263,8 +267,10 @@ JSON:
   id, status, pending, waitingOn,
   document: { type, key, displayName },
   anchorType, state,                       // "current" | "carried" | "outdated"
-  placement, label,                        // placement: the anchor type's JSON; label: its words
-  madeOn: { seq, placement }, nowReads,    // nowReads: a placement, or null
+  placement, label,                        // placement: the anchor type's JSON, null when outdated; label: its words
+  madeOn: { seq, placement },              // where it was, in the revision it was made on
+  nowReads,                                // outdated only: { placement, label, excerpt? } of what its text became, or null
+  excerpt,                                 // when asked for: { seq, text } of the source shown
   quote, createdAt, statusBy, statusAt,
   messages: [{ id, author, authorKind, session, body, revisionSeq, createdAt, sentAt, pending }],
 }
@@ -281,7 +287,7 @@ maps a placement to elements on the page.
 2. The store, ported from diffview's, which already does more: `apply`, the
    `--after` cursor, more than one anchor kind. With it, finding the app's
    folder and the config file.
-3. diffview on peanut, with its in-place migration. This is the hard one, so it goes
+3. diffview on peanut, importing its old store. This is the hard one, so it goes
    first.
 4. mdview on peanut.
 5. The shared CLI verbs, used by both apps.
