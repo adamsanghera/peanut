@@ -3,9 +3,11 @@
  * always placed, so it is never outdated. diffview's "whole branch"
  * threads and threads on a stack are this.
  */
+import type { AnchorType } from "../types.ts";
 
-/** @type {import("../types.mjs").AnchorType} */
-export const anchorType = {
+type Empty = Record<string, never>;
+
+export const anchorType: AnchorType<Empty, Empty> = {
   name: "core.whole",
   create() {
     return { anchor: {}, quote: "" };

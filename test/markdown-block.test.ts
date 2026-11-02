@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import MarkdownIt from "markdown-it";
-import { AnchorError } from "../src/index.mjs";
+import { AnchorError } from "../src/index.ts";
 import { createHash } from "node:crypto";
-import { extractBlocks, markdownBlock } from "../src/anchors/markdown-block.mjs";
-import { anchorType as whole } from "../src/anchors/whole.mjs";
+import { type BlockAnchor, type BlockPlacement, extractBlocks, markdownBlock } from "../src/anchors/markdown-block.ts";
+import type { DocumentType, Revision } from "../src/types.ts";
+import { anchorType as whole } from "../src/anchors/whole.ts";
 
 const md = new MarkdownIt();
 
@@ -16,7 +17,17 @@ const block = markdownBlock({
   },
 });
 
-function parsed(source) {
+// A document type for labels, which markdown.block does not read.
+const PAGE: DocumentType = { name: "notes.page", noun: "page", anchorTypes: ["markdown.block"], readContent: () => null, displayName: (key) => key };
+
+/** Where `anchor` is placed in `revision`, failing the test when it is not. */
+function placed(anchor: BlockAnchor, revision: Revision, type = block): BlockPlacement {
+  const placement = type.place(anchor, revision);
+  assert.ok(placement, "the anchor is placed");
+  return placement;
+}
+
+function parsed(source: string): Revision {
   return { seq: 1, sha256: createHash("sha256").update(source).digest("hex"), content: source, meta: {} };
 }
 
@@ -53,28 +64,28 @@ test("a thread follows its block through a reflow and a move", () => {
   assert.equal(quote, "drifted");
   const moved = parsed("# Plan\n\n## How\n\nTBD\n\n## Why\n\nThe two   stores\ndrifted apart.\n");
   assert.deepEqual(block.place(anchor, moved), { blockIndex: 4, lines: [9, 10], heading: "Why" });
-  assert.equal(block.label(anchor, block.place(anchor, moved)), 'under "Why", lines 9-10');
+  assert.equal(block.label(anchor, placed(anchor, moved), PAGE), 'under "Why", lines 9-10');
 });
 
 test("identical blocks keep their ordinal, or take the last when fewer remain", () => {
   const second = block.create(parsed(V1), { blockIndex: 5 }).anchor;
-  assert.equal(block.place(second, parsed(V1)).lines[0], 11);
-  assert.equal(block.place(second, parsed("## How\n\nTBD\n")).lines[0], 3);
+  assert.equal(placed(second, parsed(V1)).lines[0], 11);
+  assert.equal(placed(second, parsed("## How\n\nTBD\n")).lines[0], 3);
 });
 
 test("an edited block is outdated, and its successor is found", () => {
   const { anchor } = block.create(parsed(V1), { blockIndex: 2 });
   const edited = parsed(V1.replace("The two stores drifted apart.", "The two stores drifted apart over a month."));
   assert.equal(block.place(anchor, edited), null);
-  assert.deepEqual(block.successor(anchor, parsed(V1), edited), { blockIndex: 2, lines: [5, 5], heading: "Why" });
+  assert.deepEqual(block.successor!(anchor, parsed(V1), edited), { blockIndex: 2, lines: [5, 5], heading: "Why" });
   const rewritten = parsed(V1.replace("The two stores drifted apart.", "Something else entirely."));
-  assert.equal(block.successor(anchor, parsed(V1), rewritten), null);
+  assert.equal(block.successor!(anchor, parsed(V1), rewritten), null);
 });
 
 test("the excerpt is the block's source as written", () => {
   const v = parsed("Some *emphasis*\nacross lines.\n");
   const { anchor } = block.create(v, { blockIndex: 0 });
-  assert.equal(block.excerpt(anchor, block.place(anchor, v), v), "Some *emphasis*\nacross lines.");
+  assert.equal(block.excerpt!(anchor, placed(anchor, v), v), "Some *emphasis*\nacross lines.");
 });
 
 test("a block that is not there is an AnchorError", () => {
@@ -90,25 +101,26 @@ test("a revision is parsed once, however many threads are placed in it", () => {
 });
 
 test("front matter cut before parsing is added back to the lines", () => {
-  const withFrontMatter = markdownBlock({ tokenize: (content) => ({ tokens: md.parse(content.split("---\n")[2], {}), lineOffset: 3 }) });
+  const withFrontMatter = markdownBlock({ tokenize: (content) => ({ tokens: md.parse(content.split("---\n")[2] ?? "", {}), lineOffset: 3 }) });
   const v = parsed("---\ntitle: x\n---\n# Heading\n");
   const { anchor } = withFrontMatter.create(v, { blockIndex: 0 });
-  assert.deepEqual(withFrontMatter.place(anchor, v).lines, [4, 4]);
+  assert.deepEqual(placed(anchor, v, withFrontMatter).lines, [4, 4]);
 });
 
 test("a whole-document thread is always placed and is named by its document type's noun", () => {
-  const { anchor } = whole.create({}, {});
-  assert.deepEqual(whole.place(anchor, {}), {});
-  assert.equal(whole.label(anchor, {}, { noun: "branch" }), "the whole branch");
+  const empty = parsed("");
+  const { anchor } = whole.create(empty, {});
+  assert.deepEqual(whole.place(anchor, empty), {});
+  assert.equal(whole.label(anchor, {}, { ...PAGE, noun: "branch" }), "the whole branch");
 });
 
 test("a line or a quote picks the block, and ambiguity is refused", () => {
   const v = parsed(V1);
-  assert.equal(block.place(block.create(v, { line: 5 }).anchor, v).blockIndex, 2);
+  assert.equal(placed(block.create(v, { line: 5 }).anchor, v).blockIndex, 2);
   assert.throws(() => block.create(v, { line: 2 }), /not in a heading, paragraph/);
 
   const quoted = block.create(v, { quote: "stores   drifted" });
-  assert.equal(block.place(quoted.anchor, v).blockIndex, 2, "whitespace in a quote is collapsed");
+  assert.equal(placed(quoted.anchor, v).blockIndex, 2, "whitespace in a quote is collapsed");
   assert.equal(quoted.anchor.start, 8, "the quote's offset in its block");
   assert.throws(() => block.create(v, { quote: "TBD" }), /appears in 2 blocks/);
   assert.throws(() => block.create(v, { quote: "absent" }), /not in the doc/);

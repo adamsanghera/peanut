@@ -6,17 +6,21 @@
   "description": "Comment threads between humans and agents, anchored in documents that change",
   "license": "MIT",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=24"
   },
   "exports": {
-    ".": "./src/index.mjs",
-    "./anchors/markdown-block": "./src/anchors/markdown-block.mjs",
-    "./anchors/whole": "./src/anchors/whole.mjs"
+    ".": "./src/index.ts",
+    "./anchors/markdown-block": "./src/anchors/markdown-block.ts",
+    "./anchors/whole": "./src/anchors/whole.ts"
   },
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.mjs\""
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc"
   },
   "devDependencies": {
-    "markdown-it": "15.0.3"
+    "@types/markdown-it": "14.2.0",
+    "@types/node": "24.19.2",
+    "markdown-it": "15.0.3",
+    "typescript": "7.0.2"
   }
 }

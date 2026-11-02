@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { migrate, Registry } from "../src/index.mjs";
+import { migrate, Registry } from "../src/index.ts";
 
 const NOTES = { name: "notes", migrations: ["CREATE TABLE notes_viewed (path TEXT PRIMARY KEY)"] };
 
-function tables(db) {
-  return db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name").all().map((r) => r.name);
+function tables(db: DatabaseSync): string[] {
+  return db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name").all().map((r) => String(r.name));
 }
 
 test("migrating creates the core's tables and each registered app's, once", () => {
@@ -49,7 +49,7 @@ test("thread_facts says whose turn it is", () => {
   db.exec(`INSERT INTO documents (id, type, key, created_at) VALUES (1, 'notes.page', '/a.md', '${now}');
     INSERT INTO revisions (id, document_id, seq, sha256, content, observed_at) VALUES (1, 1, 1, 'x', '# A', '${now}');
     INSERT INTO threads (id, document_id, revision_id, anchor_type, anchor, created_at) VALUES (1, 1, 1, 'markdown.block', '{}', '${now}');`);
-  const say = (kind, sentAt) =>
+  const say = (kind: string, sentAt: string | null) =>
     db.prepare("INSERT INTO messages (thread_id, revision_id, author, author_kind, body, created_at, sent_at) VALUES (1, 1, 'x', ?, 'hi', ?, ?)").run(kind, now, sentAt);
   const facts = () => ({ ...db.prepare("SELECT draft, waiting_on FROM thread_facts").get() });
 

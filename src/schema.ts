@@ -11,9 +11,11 @@
  * it is) is defined once, in the thread_facts view, and every reader uses it.
  * It is unchanged from mdview's and diffview's stores.
  */
+import type { DatabaseSync } from "node:sqlite";
+import type { Registry } from "./registry.ts";
 
 /** The core's steps. Append; never edit a step that has shipped. */
-export const CORE_MIGRATIONS = [
+export const CORE_MIGRATIONS: readonly string[] = [
   `
 CREATE TABLE documents (
   id         INTEGER PRIMARY KEY,
@@ -90,9 +92,9 @@ const MIGRATIONS_TABLE = `CREATE TABLE IF NOT EXISTS migrations (
  * transaction, and returns the steps it ran as ["core:1", "diffview:1", ...].
  * `db` is a node:sqlite DatabaseSync.
  */
-export function migrate(db, registry) {
-  const namespaces = [["core", CORE_MIGRATIONS], ...registry.apps().map((app) => [app.name, app.migrations])];
-  const ran = [];
+export function migrate(db: DatabaseSync, registry: Registry): string[] {
+  const namespaces: [string, readonly string[]][] = [["core", CORE_MIGRATIONS], ...registry.apps().map((app): [string, readonly string[]] => [app.name, app.migrations])];
+  const ran: string[] = [];
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(MIGRATIONS_TABLE);
@@ -101,12 +103,12 @@ export function migrate(db, registry) {
       "INSERT INTO migrations (namespace, version) VALUES (?, ?) ON CONFLICT (namespace) DO UPDATE SET version = excluded.version",
     );
     for (const [namespace, steps] of namespaces) {
-      const done = read.get(namespace)?.version ?? 0;
+      const done = Number(read.get(namespace)?.version ?? 0);
       if (done > steps.length) {
         throw new Error(`The store has ${done} "${namespace}" migrations, more than this code knows (${steps.length}). Is an older ${namespace} running?`);
       }
       for (let i = done; i < steps.length; i++) {
-        db.exec(steps[i]);
+        db.exec(steps[i]!);
         ran.push(`${namespace}:${i + 1}`);
       }
       if (steps.length > done) write.run(namespace, steps.length);

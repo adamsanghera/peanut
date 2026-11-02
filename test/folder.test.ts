@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { findFolder, homeVariable, prepareFolder } from "../src/index.mjs";
+import { findFolder, homeVariable, prepareFolder } from "../src/index.ts";
 
 function sandbox() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "peanut-folder-")));

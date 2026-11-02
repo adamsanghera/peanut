@@ -12,9 +12,55 @@
  * the one markdownBlock() makes for it, with its own markdown-it setup.
  */
 import { createHash } from "node:crypto";
-import { AnchorError } from "../errors.mjs";
+import { AnchorError } from "../errors.ts";
+import type { AnchorType, Revision } from "../types.ts";
 
-const BLOCK_KIND_BY_TOKEN = {
+/** The parts of a markdown-it token blocks are found from, so peanut needs no markdown-it of its own. */
+export interface MarkdownToken {
+  type: string;
+  content: string;
+  info: string;
+  level: number;
+  hidden: boolean;
+  map: [number, number] | null;
+  attrSet(name: string, value: string): void;
+}
+
+export type BlockKind = "heading" | "paragraph" | "code" | "row";
+
+export interface Block {
+  index: number;
+  kind: BlockKind;
+  /** Of the block's kind and whitespace-collapsed text. */
+  sha: string;
+  /** Earlier blocks with the same sha. */
+  ordinal: number;
+  text: string;
+  /** 1-based, inclusive, in the file. */
+  startLine: number;
+  endLine: number;
+}
+
+/** What a markdown.block thread stores: its block's hash and which repeat of it, and where in it the quote starts. */
+export type BlockAnchor = { blockSha: string; ordinal: number; start: number | null };
+
+/** Where a markdown.block thread sits in one revision. */
+export type BlockPlacement = { blockIndex: number; lines: [number, number]; heading: string | null };
+
+/** How a UI or CLI names the block for a new thread: see create(). */
+export interface BlockSpec {
+  blockIndex?: number;
+  line?: number;
+  quote?: string;
+  start?: number;
+}
+
+export interface MarkdownBlockOptions {
+  /** Parses a revision's content with the app's markdown-it. `lineOffset` counts front matter lines cut off first. */
+  tokenize(content: string): { tokens: MarkdownToken[]; lineOffset?: number };
+}
+
+const BLOCK_KIND_BY_TOKEN: Record<string, BlockKind> = {
   heading_open: "heading",
   paragraph_open: "paragraph",
   fence: "code",
@@ -26,34 +72,36 @@ const BLOCK_KIND_BY_TOKEN = {
 // outdated thread's block to count as that block, edited.
 const SUCCESSOR_SIMILARITY = 0.5;
 
-export function sha256(text) {
+export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
 /** Collapses whitespace runs so reflowed text compares equal. */
-export function normalizeText(text) {
+export function normalizeText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function blockText(tokens, i) {
-  const token = tokens[i];
+function blockText(tokens: MarkdownToken[], i: number): string {
+  const token = tokens[i]!;
   if (token.type === "fence") return `${token.info}\n${token.content}`;
   if (token.type === "code_block") return token.content;
   if (token.type === "tr_open") {
-    const cells = [];
-    for (let j = i + 1; j < tokens.length && tokens[j].type !== "tr_close"; j++) {
-      if (tokens[j].type === "inline") cells.push(tokens[j].content);
+    const cells: string[] = [];
+    for (let j = i + 1; j < tokens.length && tokens[j]!.type !== "tr_close"; j++) {
+      if (tokens[j]!.type === "inline") cells.push(tokens[j]!.content);
     }
     return cells.join(" | ");
   }
-  return tokens[i + 1].content;
+  // Headings and paragraphs: their text is the inline token that follows the opening one.
+  return tokens[i + 1]?.content ?? "";
 }
 
-function enclosingListItem(tokens, i) {
+function enclosingListItem(tokens: MarkdownToken[], i: number): MarkdownToken {
+  const token = tokens[i]!;
   for (let j = i - 1; j >= 0; j--) {
-    if (tokens[j].type === "list_item_open" && tokens[j].level === tokens[i].level - 1) return tokens[j];
+    if (tokens[j]!.type === "list_item_open" && tokens[j]!.level === token.level - 1) return tokens[j]!;
   }
-  return tokens[i];
+  return token;
 }
 
 /**
@@ -66,14 +114,12 @@ function enclosingListItem(tokens, i) {
  * earlier blocks with the same sha, telling apart two "TBD" paragraphs.
  * Lines are 1-based and inclusive in the file: `lineOffset` adds back the
  * front matter cut off before parsing.
- *
- * @returns {import("../types.mjs").Block[]}
  */
-export function extractBlocks(tokens, lineOffset = 0) {
-  const blocks = [];
-  const seen = new Map();
+export function extractBlocks(tokens: MarkdownToken[], lineOffset = 0): Block[] {
+  const blocks: Block[] = [];
+  const seen = new Map<string, number>();
   for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
+    const token = tokens[i]!;
     const kind = BLOCK_KIND_BY_TOKEN[token.type];
     if (!kind || !token.map) continue;
     const text = normalizeText(blockText(tokens, i));
@@ -102,28 +148,28 @@ export function extractBlocks(tokens, lineOffset = 0) {
  * identical blocks it takes the same ordinal, or the last one when fewer
  * remain.
  */
-export function findBlock(anchor, blocks) {
+export function findBlock(anchor: Pick<BlockAnchor, "blockSha" | "ordinal">, blocks: Block[]): Block | null {
   const same = blocks.filter((b) => b.sha === anchor.blockSha);
-  return same.length ? same[Math.min(anchor.ordinal, same.length - 1)] : null;
+  return same[Math.min(anchor.ordinal, same.length - 1)] ?? null;
 }
 
-function headingAbove(blocks, index) {
+function headingAbove(blocks: Block[], index: number): string | null {
   for (let i = index - 1; i >= 0; i--) {
-    if (blocks[i].kind === "heading") return blocks[i].text;
+    if (blocks[i]!.kind === "heading") return blocks[i]!.text;
   }
   return null;
 }
 
-function sourceLines(source, block) {
+function sourceLines(source: string, block: Block): string {
   return source.split("\n").slice(block.startLine - 1, block.endLine).join("\n");
 }
 
-function wordSet(text) {
+function wordSet(text: string): Set<string> {
   return new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 }
 
 /** A block's placement: which block, its lines, and the heading it sits under. */
-function placementOf(blocks, block) {
+function placementOf(blocks: Block[], block: Block): BlockPlacement {
   return {
     blockIndex: block.index,
     lines: [block.startLine, block.endLine],
@@ -132,13 +178,13 @@ function placementOf(blocks, block) {
 }
 
 /** The block a spec names (see create()), or an AnchorError saying why there is none. */
-function pickBlock(blocks, { blockIndex, line, quote }) {
-  if (Number.isInteger(blockIndex)) {
+function pickBlock(blocks: Block[], { blockIndex, line, quote }: BlockSpec): Block {
+  if (typeof blockIndex === "number" && Number.isInteger(blockIndex)) {
     const block = blocks[blockIndex];
     if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${blocks.length}.`);
     return block;
   }
-  if (Number.isInteger(line)) {
+  if (typeof line === "number" && Number.isInteger(line)) {
     const block = blocks.find((b) => b.startLine <= line && line <= b.endLine);
     if (!block) throw new AnchorError(`Line ${line} is not in a heading, paragraph, code block or table row. Pick a line with text on it.`);
     return block;
@@ -146,7 +192,7 @@ function pickBlock(blocks, { blockIndex, line, quote }) {
   const needle = normalizeText(quote ?? "");
   if (!needle) throw new AnchorError("Name the block by a line in it, or by a quote from it.");
   const hits = blocks.filter((b) => b.text.includes(needle));
-  if (hits.length === 1) return hits[0];
+  if (hits.length === 1) return hits[0]!;
   if (!hits.length) throw new AnchorError("The quote is not in the doc. Quote it as it reads, ignoring line breaks.");
   throw new AnchorError(`The quote appears in ${hits.length} blocks. Quote more of it.`);
 }
@@ -161,19 +207,16 @@ const PARSED_REVISIONS = 32;
  * `{tokens, lineOffset}`, where `lineOffset` counts front matter lines cut
  * off before parsing. Each app makes its own because which plugins run
  * changes the tokens, and so the blocks' hashes.
- *
- * @param {{ tokenize: (content: string) => { tokens: any[], lineOffset?: number } }} options
- * @returns {import("../types.mjs").AnchorType}
  */
-export function markdownBlock({ tokenize }) {
-  const cache = new Map();
-  const blocksOf = (revision) => {
+export function markdownBlock({ tokenize }: MarkdownBlockOptions): AnchorType<BlockAnchor, BlockPlacement, BlockSpec> {
+  const cache = new Map<string, Block[]>();
+  const blocksOf = (revision: Revision): Block[] => {
     let blocks = cache.get(revision.sha256);
     if (blocks) return blocks;
     const { tokens, lineOffset = 0 } = tokenize(revision.content);
     blocks = extractBlocks(tokens, lineOffset);
     cache.set(revision.sha256, blocks);
-    if (cache.size > PARSED_REVISIONS) cache.delete(cache.keys().next().value);
+    if (cache.size > PARSED_REVISIONS) cache.delete(cache.keys().next().value!);
     return blocks;
   };
 
@@ -190,7 +233,7 @@ export function markdownBlock({ tokenize }) {
     create(revision, spec) {
       const block = pickBlock(blocksOf(revision), spec);
       const quote = spec.quote ?? "";
-      const start = Number.isInteger(spec.start) ? spec.start : quote ? Math.max(0, block.text.indexOf(normalizeText(quote))) : null;
+      const start = typeof spec.start === "number" && Number.isInteger(spec.start) ? spec.start : quote ? Math.max(0, block.text.indexOf(normalizeText(quote))) : null;
       return { anchor: { blockSha: block.sha, ordinal: block.ordinal, start }, quote };
     },
 
@@ -213,7 +256,7 @@ export function markdownBlock({ tokenize }) {
       if (!block) return null;
       const kept = new Set(before.map((b) => b.sha));
       const words = wordSet(block.text);
-      let best = null;
+      let best: Block | null = null;
       let bestScore = 0;
       for (const candidate of after) {
         if (candidate.kind !== block.kind || kept.has(candidate.sha)) continue;
@@ -226,7 +269,7 @@ export function markdownBlock({ tokenize }) {
           bestScore = score;
         }
       }
-      return bestScore >= SUCCESSOR_SIMILARITY ? placementOf(after, best) : null;
+      return best && bestScore >= SUCCESSOR_SIMILARITY ? placementOf(after, best) : null;
     },
 
     label(_anchor, placement) {
@@ -237,7 +280,8 @@ export function markdownBlock({ tokenize }) {
     },
 
     excerpt(_anchor, placement, revision) {
-      return sourceLines(revision.content, blocksOf(revision)[placement.blockIndex]);
+      const block = blocksOf(revision)[placement.blockIndex];
+      return block ? sourceLines(revision.content, block) : "";
     },
   };
 }

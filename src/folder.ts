@@ -13,12 +13,26 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { StoreError } from "./errors.mjs";
+import { StoreError } from "./errors.ts";
+
+export interface Folder {
+  /** The folder the store lives in. */
+  dir: string;
+  /** The directory holding a project folder, or null for any other rule. */
+  project: string | null;
+}
+
+interface FindOptions {
+  /** A file or directory the work is in; the process's cwd by default. */
+  from?: string;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+}
 
 const IGNORE_ALL = "# peanut: comments stay next to the work, out of git.\n*\n";
 
 /** The environment variable that overrides a folder: "code-review" → "CODE_REVIEW_HOME". */
-export function homeVariable(folder) {
+export function homeVariable(folder: string): string {
   return `${folder.toUpperCase().replace(/-/g, "_")}_HOME`;
 }
 
@@ -28,7 +42,7 @@ export function homeVariable(folder) {
  * directory holding a project folder, or null for any other rule. Reads
  * only; prepareFolder() creates it.
  */
-export function findFolder(folder, { from = process.cwd(), env = process.env, home = os.homedir() } = {}) {
+export function findFolder(folder: string, { from = process.cwd(), env = process.env, home = os.homedir() }: FindOptions = {}): Folder {
   const fromEnv = env[homeVariable(folder)];
   if (fromEnv) return { dir: path.resolve(fromEnv), project: null };
 
@@ -50,7 +64,7 @@ export function findFolder(folder, { from = process.cwd(), env = process.env, ho
 }
 
 /** Creates the folder findFolder() returned, and keeps a project folder out of git. */
-export function prepareFolder({ dir, project }) {
+export function prepareFolder({ dir, project }: Folder): string {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (project) {
     const ignore = path.join(dir, ".gitignore");
@@ -59,24 +73,24 @@ export function prepareFolder({ dir, project }) {
   return dir;
 }
 
-function readConfig(folder, env, home) {
+function readConfig(folder: string, env: NodeJS.ProcessEnv, home: string): { home?: string } | null {
   const base = env.XDG_CONFIG_HOME || path.join(home, ".config");
   const file = path.join(base, folder, "config.json");
-  let text;
+  let text: string;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (err) {
-    if (err.code === "ENOENT") return null;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new StoreError(`${file} is not valid JSON: ${err.message}`);
+    throw new StoreError(`${file} is not valid JSON: ${(err as Error).message}`);
   }
 }
 
-function isDirectory(p) {
+function isDirectory(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory();
   } catch {

@@ -1,21 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { markdownBlock, Registry, RegistryError } from "../src/index.mjs";
+import { markdownBlock, Registry, RegistryError } from "../src/index.ts";
+import type { AnyAnchorType, DocumentType } from "../src/types.ts";
 
 const noop = () => null;
 
-function documentType(overrides = {}) {
-  return { name: "notes.page", noun: "page", anchorTypes: ["core.whole"], readContent: noop, displayName: noop, ...overrides };
+// Typed as what the registry is given, not as what it accepts: several tests hand it malformed ones on purpose.
+function documentType(overrides: Record<string, unknown> = {}): DocumentType {
+  return { name: "notes.page", noun: "page", anchorTypes: ["core.whole"], readContent: noop, displayName: () => "page", ...overrides } as DocumentType;
 }
 
-function anchorType(overrides = {}) {
-  return { name: "code.lines", create: noop, place: noop, label: noop, ...overrides };
+function anchorType(overrides: Record<string, unknown> = {}): AnyAnchorType {
+  return { name: "code.lines", create: noop, place: noop, label: () => "", ...overrides } as unknown as AnyAnchorType;
 }
 
 test("an app's document types may use core.whole, and the markdown.block it made", () => {
   const block = markdownBlock({ tokenize: () => ({ tokens: [] }) });
   const registry = new Registry().register({ name: "notes", anchorTypes: [block], documentTypes: [documentType({ anchorTypes: ["markdown.block", "core.whole"] })] });
-  assert.equal(registry.anchorType("markdown.block"), registry.apps()[0].anchorTypes[0]);
+  assert.equal(registry.anchorType("markdown.block"), registry.apps()[0]!.anchorTypes[0]);
   assert.equal(registry.documentType("notes.page").noun, "page");
   assert.ok(registry.allows("notes.page", "core.whole"));
   assert.ok(!registry.allows("notes.page", "code.lines"));
