@@ -1,4 +1,4 @@
-/** An app registered something margin cannot use. A programming error, not a user's. */
+/** An app registered something peanut cannot use. A programming error, not a user's. */
 export class RegistryError extends Error {}
 
 /** A thread cannot be pinned where it was asked for. Worded for the person or agent who asked. */

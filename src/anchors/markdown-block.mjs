@@ -121,8 +121,8 @@ function wordSet(text) {
   return new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 }
 
-/** A block as the UI and CLI see it: where it is, and what heading it sits under. */
-function placeOf(markdown, block) {
+/** A block's location: which block, its lines, and the heading it sits under. */
+function locationOf(markdown, block) {
   return {
     blockIndex: block.index,
     lines: [block.startLine, block.endLine],
@@ -133,7 +133,7 @@ function placeOf(markdown, block) {
 /** @type {import("../types.mjs").AnchorType} */
 export const anchorType = {
   name: "markdown.block",
-  needs: ["markdown"],
+  reads: ["markdown"],
 
   /** spec: {blockIndex, quote?, start?}: a block, and optionally the selected text in it and its offset. */
   create({ markdown }, { blockIndex, quote = "", start = null }) {
@@ -144,7 +144,7 @@ export const anchorType = {
 
   locate(anchor, { markdown }) {
     const block = findBlock(anchor, markdown.blocks);
-    return block && placeOf(markdown, block);
+    return block && locationOf(markdown, block);
   },
 
   /**
@@ -171,16 +171,17 @@ export const anchorType = {
         bestScore = score;
       }
     }
-    return bestScore >= SUCCESSOR_SIMILARITY ? placeOf(to.markdown, best) : null;
+    return bestScore >= SUCCESSOR_SIMILARITY ? locationOf(to.markdown, best) : null;
   },
 
-  label(_anchor, place) {
-    if (!place) return "a block that is gone";
-    const lines = place.lines[0] === place.lines[1] ? `line ${place.lines[0]}` : `lines ${place.lines[0]}-${place.lines[1]}`;
-    return place.heading ? `under "${place.heading}", ${lines}` : lines;
+  label(_anchor, location) {
+    if (!location) return "a block that is gone";
+    const [start, end] = location.lines;
+    const lines = start === end ? `line ${start}` : `lines ${start}-${end}`;
+    return location.heading ? `under "${location.heading}", ${lines}` : lines;
   },
 
-  excerpt(_anchor, place, { markdown }) {
-    return sourceLines(markdown.source, markdown.blocks[place.blockIndex]);
+  excerpt(_anchor, location, { markdown }) {
+    return sourceLines(markdown.source, markdown.blocks[location.blockIndex]);
   },
 };

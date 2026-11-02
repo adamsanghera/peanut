@@ -7,14 +7,14 @@
 /** @type {import("../types.mjs").AnchorType} */
 export const anchorType = {
   name: "core.whole",
-  needs: [],
+  reads: [],
   create() {
     return { anchor: {}, quote: "" };
   },
   locate() {
     return {};
   },
-  label(_anchor, _place, kind) {
-    return `the whole ${kind.noun}`;
+  label(_anchor, _location, documentType) {
+    return `the whole ${documentType.noun}`;
   },
 };

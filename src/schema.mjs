@@ -17,10 +17,10 @@ export const CORE_MIGRATIONS = [
   `
 CREATE TABLE documents (
   id         INTEGER PRIMARY KEY,
-  kind       TEXT NOT NULL,          -- "<app>.<name>", from the registry
-  key        TEXT NOT NULL,          -- the app's; matched by prefix for scopes
+  type       TEXT NOT NULL,          -- the document type, "<app>.<name>", from the registry
+  key        TEXT NOT NULL,          -- the app's; document filters match it whole or by prefix
   created_at TEXT NOT NULL,
-  UNIQUE (kind, key)
+  UNIQUE (type, key)
 );
 CREATE TABLE revisions (
   id          INTEGER PRIMARY KEY,

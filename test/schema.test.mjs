@@ -46,7 +46,7 @@ test("thread_facts says whose turn it is", () => {
   const db = new DatabaseSync(":memory:");
   migrate(db, new Registry());
   const now = "2026-11-01T00:00:00.000Z";
-  db.exec(`INSERT INTO documents VALUES (1, 'notes.page', '/a.md', '${now}');
+  db.exec(`INSERT INTO documents (id, type, key, created_at) VALUES (1, 'notes.page', '/a.md', '${now}');
     INSERT INTO revisions (id, document_id, seq, sha256, content, observed_at) VALUES (1, 1, 1, 'x', '# A', '${now}');
     INSERT INTO threads (id, document_id, revision_id, anchor_type, anchor, created_at) VALUES (1, 1, 1, 'markdown.block', '{}', '${now}');`);
   const say = (kind, sentAt) =>

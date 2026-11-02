@@ -7,7 +7,7 @@ import { anchorType as whole } from "../src/anchors/whole.mjs";
 
 const md = new MarkdownIt();
 
-function view(source) {
+function parsed(source) {
   return { markdown: { source, blocks: extractBlocks(md.parse(source, {})) } };
 }
 
@@ -25,7 +25,7 @@ TBD
 `;
 
 test("blocks are headings, paragraphs, code and rows, with their lines", () => {
-  const { blocks } = view(V1).markdown;
+  const { blocks } = parsed(V1).markdown;
   assert.deepEqual(
     blocks.map((b) => [b.kind, b.text, b.startLine, b.endLine, b.ordinal]),
     [
@@ -40,39 +40,39 @@ test("blocks are headings, paragraphs, code and rows, with their lines", () => {
 });
 
 test("a thread follows its block through a reflow and a move", () => {
-  const { anchor, quote } = block.create(view(V1), { blockIndex: 2, quote: "drifted", start: 15 });
+  const { anchor, quote } = block.create(parsed(V1), { blockIndex: 2, quote: "drifted", start: 15 });
   assert.equal(quote, "drifted");
-  const moved = view("# Plan\n\n## How\n\nTBD\n\n## Why\n\nThe two   stores\ndrifted apart.\n");
+  const moved = parsed("# Plan\n\n## How\n\nTBD\n\n## Why\n\nThe two   stores\ndrifted apart.\n");
   assert.deepEqual(block.locate(anchor, moved), { blockIndex: 4, lines: [9, 10], heading: "Why" });
   assert.equal(block.label(anchor, block.locate(anchor, moved)), 'under "Why", lines 9-10');
 });
 
 test("identical blocks keep their ordinal, or take the last when fewer remain", () => {
-  const second = block.create(view(V1), { blockIndex: 5 }).anchor;
-  assert.equal(block.locate(second, view(V1)).lines[0], 11);
-  assert.equal(block.locate(second, view("## How\n\nTBD\n")).lines[0], 3);
+  const second = block.create(parsed(V1), { blockIndex: 5 }).anchor;
+  assert.equal(block.locate(second, parsed(V1)).lines[0], 11);
+  assert.equal(block.locate(second, parsed("## How\n\nTBD\n")).lines[0], 3);
 });
 
 test("an edited block is outdated, and its successor is found", () => {
-  const { anchor } = block.create(view(V1), { blockIndex: 2 });
-  const edited = view(V1.replace("The two stores drifted apart.", "The two stores drifted apart over a month."));
+  const { anchor } = block.create(parsed(V1), { blockIndex: 2 });
+  const edited = parsed(V1.replace("The two stores drifted apart.", "The two stores drifted apart over a month."));
   assert.equal(block.locate(anchor, edited), null);
-  assert.deepEqual(block.successor(anchor, view(V1), edited), { blockIndex: 2, lines: [5, 5], heading: "Why" });
-  const rewritten = view(V1.replace("The two stores drifted apart.", "Something else entirely."));
-  assert.equal(block.successor(anchor, view(V1), rewritten), null);
+  assert.deepEqual(block.successor(anchor, parsed(V1), edited), { blockIndex: 2, lines: [5, 5], heading: "Why" });
+  const rewritten = parsed(V1.replace("The two stores drifted apart.", "Something else entirely."));
+  assert.equal(block.successor(anchor, parsed(V1), rewritten), null);
 });
 
 test("the excerpt is the block's source as written", () => {
-  const v = view("Some *emphasis*\nacross lines.\n");
+  const v = parsed("Some *emphasis*\nacross lines.\n");
   const { anchor } = block.create(v, { blockIndex: 0 });
   assert.equal(block.excerpt(anchor, block.locate(anchor, v), v), "Some *emphasis*\nacross lines.");
 });
 
 test("a block that is not there is an AnchorError", () => {
-  assert.throws(() => block.create(view(V1), { blockIndex: 99 }), AnchorError);
+  assert.throws(() => block.create(parsed(V1), { blockIndex: 99 }), AnchorError);
 });
 
-test("a whole-document thread always attaches and is named by its kind's noun", () => {
+test("a whole-document thread always attaches and is named by its document type's noun", () => {
   const { anchor } = whole.create({}, {});
   assert.deepEqual(whole.locate(anchor, {}), {});
   assert.equal(whole.label(anchor, {}, { noun: "branch" }), "the whole branch");
