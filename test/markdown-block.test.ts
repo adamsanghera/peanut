@@ -126,3 +126,18 @@ test("a line or a quote picks the block, and ambiguity is refused", () => {
   assert.throws(() => block.create(v, { quote: "absent" }), /not in the doc/);
   assert.throws(() => block.create(v, {}), /by a line in it, or by a quote/);
 });
+
+test("blocks can count lines in a source that is not the content itself", () => {
+  // Content holding a title and a body, as diffview's descriptions do: lines and excerpts are the body's.
+  const pair = markdownBlock({
+    tokenize(content) {
+      const [, body] = JSON.parse(content) as [string, string];
+      return { tokens: md.parse(body, {}), source: body };
+    },
+  });
+  const v = parsed(JSON.stringify(["Title", "# Why\n\nBecause.\n"]));
+  const { anchor } = pair.create(v, { quote: "Because" });
+  const placement = placed(anchor, v, pair);
+  assert.deepEqual(placement.lines, [3, 3]);
+  assert.equal(pair.excerpt!(anchor, placement, v), "Because.");
+});

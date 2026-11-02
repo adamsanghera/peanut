@@ -332,3 +332,32 @@ test("an app's own tables live beside the core's, under its name", async () => {
   assert.equal(store.db.prepare("SELECT count(*) AS n FROM notes_viewed").get()?.n, 1);
   assert.ok(fs.existsSync(path.join(dir, "peanut.sqlite3")));
 });
+
+test("an app's own writes move the change token and notify, and roll back on a throw", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "peanut-store-"));
+  const app = { ...notesApp(new Map()), migrations: ["CREATE TABLE notes_viewed (key TEXT PRIMARY KEY)"] };
+  const store = await openStore({ registry: new Registry().register(app), dir });
+  let notified = 0;
+  store.onWrite(() => notified++);
+  const before = store.changeToken();
+  store.write((db) => db.prepare("INSERT INTO notes_viewed VALUES ('a')").run());
+  assert.notEqual(store.changeToken(), before);
+  assert.equal(notified, 1);
+
+  assert.throws(() =>
+    store.write((db) => {
+      db.prepare("INSERT INTO notes_viewed VALUES ('b')").run();
+      throw new Error("no");
+    }),
+  );
+  assert.equal(store.db.prepare("SELECT count(*) AS n FROM notes_viewed").get()?.n, 1);
+  assert.equal(notified, 1);
+});
+
+test("a thread view carries the anchor it was pinned with", async () => {
+  const { pages, store } = await setup();
+  pages.set("a/plan.md", PLAN);
+  const id = comment(store, { spec: { quote: "drifted apart" } });
+  assert.deepEqual(Object.keys(store.thread(id).thread.anchor).sort(), ["blockSha", "ordinal", "start"]);
+  assert.equal(store.thread(id).thread.anchor.start, 15);
+});

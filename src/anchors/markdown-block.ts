@@ -56,8 +56,13 @@ export interface BlockSpec {
 }
 
 export interface MarkdownBlockOptions {
-  /** Parses a revision's content with the app's markdown-it. `lineOffset` counts front matter lines cut off first. */
-  tokenize(content: string): { tokens: MarkdownToken[]; lineOffset?: number };
+  /**
+   * Parses a revision's content with the app's markdown-it. `lineOffset`
+   * counts front matter lines cut off first. `source` is the Markdown the
+   * blocks' lines count in, when the content is not that Markdown itself
+   * (diffview's descriptions store a title and a body together).
+   */
+  tokenize(content: string): { tokens: MarkdownToken[]; lineOffset?: number; source?: string };
 }
 
 const BLOCK_KIND_BY_TOKEN: Record<string, BlockKind> = {
@@ -209,16 +214,17 @@ const PARSED_REVISIONS = 32;
  * changes the tokens, and so the blocks' hashes.
  */
 export function markdownBlock({ tokenize }: MarkdownBlockOptions): AnchorType<BlockAnchor, BlockPlacement, BlockSpec> {
-  const cache = new Map<string, Block[]>();
-  const blocksOf = (revision: Revision): Block[] => {
-    let blocks = cache.get(revision.sha256);
-    if (blocks) return blocks;
-    const { tokens, lineOffset = 0 } = tokenize(revision.content);
-    blocks = extractBlocks(tokens, lineOffset);
-    cache.set(revision.sha256, blocks);
+  const cache = new Map<string, { blocks: Block[]; source: string }>();
+  const parsedOf = (revision: Revision): { blocks: Block[]; source: string } => {
+    let parsed = cache.get(revision.sha256);
+    if (parsed) return parsed;
+    const { tokens, lineOffset = 0, source = revision.content } = tokenize(revision.content);
+    parsed = { blocks: extractBlocks(tokens, lineOffset), source };
+    cache.set(revision.sha256, parsed);
     if (cache.size > PARSED_REVISIONS) cache.delete(cache.keys().next().value!);
-    return blocks;
+    return parsed;
   };
+  const blocksOf = (revision: Revision): Block[] => parsedOf(revision).blocks;
 
   return {
     name: "markdown.block",
@@ -280,8 +286,9 @@ export function markdownBlock({ tokenize }: MarkdownBlockOptions): AnchorType<Bl
     },
 
     excerpt(_anchor, placement, revision) {
-      const block = blocksOf(revision)[placement.blockIndex];
-      return block ? sourceLines(revision.content, block) : "";
+      const { blocks, source } = parsedOf(revision);
+      const block = blocks[placement.blockIndex];
+      return block ? sourceLines(source, block) : "";
     },
   };
 }

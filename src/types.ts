@@ -153,6 +153,8 @@ export interface ThreadView {
   waitingOn: Author["kind"] | null;
   document: DocumentInfo;
   anchorType: string;
+  /** What the thread was pinned to, as its anchor type stored it. */
+  anchor: JsonObject;
   state: ThreadState;
   /** Where the anchor is placed in the revision shown; null when outdated. */
   placement: JsonObject | null;

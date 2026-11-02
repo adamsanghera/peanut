@@ -178,9 +178,22 @@ export class Store {
     this.#db.close();
   }
 
-  /** The SQLite handle, for an app's own tables. Its writes do not notify onWrite() listeners. */
+  /** The SQLite handle, for reading an app's own tables. Write them with write(), so readers hear about it. */
   get db(): DatabaseSync {
     return this.#db;
+  }
+
+  /**
+   * Runs `fn` under the write lock, for an app's writes to its own tables
+   * (diffview's viewed marks, say). It counts as a write: the change token
+   * moves and onWrite() listeners hear about it once it commits. A throw
+   * rolls back everything `fn` did.
+   */
+  write<T>(fn: (db: DatabaseSync) => T): T {
+    return this.#transaction(() => {
+      this.#writes++;
+      return fn(this.#db);
+    });
   }
 
   /** Changes whenever this process or another one writes to the store. */
@@ -677,6 +690,7 @@ export class Store {
         waitingOn: row.waiting_on,
         document: documentInfo,
         anchorType: row.anchor_type,
+        anchor,
         state,
         placement,
         label: anchorType.label(anchor, shown.placement, documentType),
