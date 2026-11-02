@@ -121,8 +121,8 @@ function wordSet(text) {
   return new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 }
 
-/** A block's location: which block, its lines, and the heading it sits under. */
-function locationOf(markdown, block) {
+/** A block's placement: which block, its lines, and the heading it sits under. */
+function placementOf(markdown, block) {
   return {
     blockIndex: block.index,
     lines: [block.startLine, block.endLine],
@@ -130,21 +130,28 @@ function locationOf(markdown, block) {
   };
 }
 
+/** `parsed.markdown`, or an error naming the document type's mistake. */
+function markdownOf(parsed) {
+  if (!parsed?.markdown?.blocks) throw new TypeError("markdown.block reads parsed.markdown ({source, blocks}), which this document type's parse() did not return.");
+  return parsed.markdown;
+}
+
 /** @type {import("../types.mjs").AnchorType} */
 export const anchorType = {
   name: "markdown.block",
-  reads: ["markdown"],
 
   /** spec: {blockIndex, quote?, start?}: a block, and optionally the selected text in it and its offset. */
-  create({ markdown }, { blockIndex, quote = "", start = null }) {
+  create(parsed, { blockIndex, quote = "", start = null }) {
+    const markdown = markdownOf(parsed);
     const block = markdown.blocks[blockIndex];
     if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${markdown.blocks.length}.`);
     return { anchor: { blockSha: block.sha, ordinal: block.ordinal, start }, quote };
   },
 
-  locate(anchor, { markdown }) {
+  place(anchor, parsed) {
+    const markdown = markdownOf(parsed);
     const block = findBlock(anchor, markdown.blocks);
-    return block && locationOf(markdown, block);
+    return block && placementOf(markdown, block);
   },
 
   /**
@@ -154,13 +161,15 @@ export const anchorType = {
    * rewritten from scratch.
    */
   successor(anchor, from, to) {
-    const block = findBlock(anchor, from.markdown.blocks);
+    const before = markdownOf(from);
+    const after = markdownOf(to);
+    const block = findBlock(anchor, before.blocks);
     if (!block) return null;
-    const kept = new Set(from.markdown.blocks.map((b) => b.sha));
+    const kept = new Set(before.blocks.map((b) => b.sha));
     const words = wordSet(block.text);
     let best = null;
     let bestScore = 0;
-    for (const candidate of to.markdown.blocks) {
+    for (const candidate of after.blocks) {
       if (candidate.kind !== block.kind || kept.has(candidate.sha)) continue;
       const other = wordSet(candidate.text);
       let shared = 0;
@@ -171,17 +180,18 @@ export const anchorType = {
         bestScore = score;
       }
     }
-    return bestScore >= SUCCESSOR_SIMILARITY ? locationOf(to.markdown, best) : null;
+    return bestScore >= SUCCESSOR_SIMILARITY ? placementOf(after, best) : null;
   },
 
-  label(_anchor, location) {
-    if (!location) return "a block that is gone";
-    const [start, end] = location.lines;
+  label(_anchor, placement) {
+    if (!placement) return "a block that is gone";
+    const [start, end] = placement.lines;
     const lines = start === end ? `line ${start}` : `lines ${start}-${end}`;
-    return location.heading ? `under "${location.heading}", ${lines}` : lines;
+    return placement.heading ? `under "${placement.heading}", ${lines}` : lines;
   },
 
-  excerpt(_anchor, location, { markdown }) {
-    return sourceLines(markdown.source, markdown.blocks[location.blockIndex]);
+  excerpt(_anchor, placement, parsed) {
+    const markdown = markdownOf(parsed);
+    return sourceLines(markdown.source, markdown.blocks[placement.blockIndex]);
   },
 };

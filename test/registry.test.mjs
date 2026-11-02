@@ -5,11 +5,11 @@ import { Registry, RegistryError } from "../src/index.mjs";
 const noop = () => null;
 
 function documentType(overrides = {}) {
-  return { name: "notes.page", noun: "page", contentTypes: ["markdown"], anchorTypes: ["markdown.block"], readContent: noop, parse: noop, displayName: noop, ...overrides };
+  return { name: "notes.page", noun: "page", anchorTypes: ["markdown.block"], readContent: noop, parse: noop, displayName: noop, ...overrides };
 }
 
 function anchorType(overrides = {}) {
-  return { name: "code.lines", reads: ["diff"], create: noop, locate: noop, label: noop, ...overrides };
+  return { name: "code.lines", create: noop, place: noop, label: noop, ...overrides };
 }
 
 test("an app's document types may use peanut's anchor types", () => {
@@ -23,14 +23,14 @@ test("an app's document types may use its own anchor types", () => {
   const registry = new Registry().register({
     name: "code",
     anchorTypes: [anchorType()],
-    documentTypes: [documentType({ name: "code.branch", contentTypes: ["diff"], anchorTypes: ["code.lines", "core.whole"] })],
+    documentTypes: [documentType({ name: "code.branch", anchorTypes: ["code.lines", "core.whole"] })],
   });
-  assert.equal(registry.anchorType("code.lines").reads[0], "diff");
+  assert.equal(registry.anchorType("code.lines").name, "code.lines");
 });
 
 test("a later app may share an earlier app's anchor type", () => {
   const registry = new Registry().register({ name: "code", anchorTypes: [anchorType()] });
-  registry.register({ name: "review", documentTypes: [documentType({ name: "review.patch", contentTypes: ["diff"], anchorTypes: ["code.lines"] })] });
+  registry.register({ name: "review", documentTypes: [documentType({ name: "review.patch", anchorTypes: ["code.lines"] })] });
   assert.ok(registry.allows("review.patch", "code.lines"));
 });
 
@@ -48,11 +48,11 @@ test("peanut's namespaces and taken names are refused", () => {
   assert.throws(() => registry.register({ name: "notes" }), /already registered/);
 });
 
-test("a document type must parse every content type its anchor types read", () => {
-  assert.throws(
-    () => new Registry().register({ name: "notes", documentTypes: [documentType({ contentTypes: [] })] }),
-    (err) => err instanceof RegistryError && /reads content types it does not parse: markdown/.test(err.message),
-  );
+test("an app's folder defaults to its name, and must be a plain name", () => {
+  const registry = new Registry().register({ name: "notes" }).register({ name: "code", folder: "code-review" });
+  assert.deepEqual(registry.apps().map((a) => a.folder), ["notes", "code-review"]);
+  assert.throws(() => new Registry().register({ name: "notes", folder: "../elsewhere" }), /plain name/);
+  assert.throws(() => new Registry().register({ name: "notes", folder: ".notes" }), /plain name/);
 });
 
 test("a document type may only allow registered anchor types", () => {
@@ -62,7 +62,7 @@ test("a document type may only allow registered anchor types", () => {
 
 test("a malformed app leaves the registry as it was", () => {
   const registry = new Registry();
-  assert.throws(() => registry.register({ name: "code", anchorTypes: [anchorType()], documentTypes: [documentType({ name: "code.branch", contentTypes: [] , anchorTypes: ["code.lines"] })] }));
+  assert.throws(() => registry.register({ name: "code", anchorTypes: [anchorType()], documentTypes: [documentType({ name: "code.branch", noun: "" , anchorTypes: ["code.lines"] })] }));
   assert.throws(() => registry.anchorType("code.lines"), /No anchor type/);
   assert.deepEqual(registry.apps(), []);
 });

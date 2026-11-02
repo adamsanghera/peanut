@@ -15,9 +15,10 @@ export const RESERVED = new Set(["core", "markdown"]);
 const BUILT_INS = [whole.anchorType, markdownBlock.anchorType];
 
 const APP_NAME = /^[a-z][a-z0-9]*$/;
+const FOLDER_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 const QUALIFIED = /^([a-z][a-z0-9]*)\.([a-z][a-z0-9-]*)$/;
 const DOCUMENT_TYPE_METHODS = ["readContent", "parse", "displayName"];
-const ANCHOR_TYPE_METHODS = ["create", "locate", "label"];
+const ANCHOR_TYPE_METHODS = ["create", "place", "label"];
 // CREATE TABLE, INDEX, VIEW or TRIGGER, with optional IF NOT EXISTS, and the name after it.
 const CREATED_NAME = /\bCREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|VIEW|TRIGGER)\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?(\w+)/gi;
 
@@ -31,6 +32,8 @@ export class Registry {
     if (!APP_NAME.test(app?.name ?? "")) throw new RegistryError(`App name ${JSON.stringify(app?.name)} must be lowercase letters and digits.`);
     if (RESERVED.has(app.name)) throw new RegistryError(`"${app.name}" is reserved for peanut.`);
     if (this.#apps.has(app.name)) throw new RegistryError(`App "${app.name}" is already registered.`);
+    const folder = app.folder ?? app.name;
+    if (!FOLDER_NAME.test(folder)) throw new RegistryError(`App "${app.name}" folder ${JSON.stringify(folder)} must be a plain name, such as "${app.name}".`);
 
     const anchorTypes = (app.anchorTypes ?? []).map((t) => checkAnchorType(app.name, t));
     for (const t of anchorTypes) {
@@ -46,7 +49,7 @@ export class Registry {
 
     for (const t of anchorTypes) this.#anchorTypes.set(t.name, t);
     for (const d of documentTypes) this.#documentTypes.set(d.name, d);
-    this.#apps.set(app.name, Object.freeze({ name: app.name, documentTypes, anchorTypes, migrations }));
+    this.#apps.set(app.name, Object.freeze({ name: app.name, folder, documentTypes, anchorTypes, migrations }));
     return this;
   }
 
@@ -85,8 +88,7 @@ function checkAnchorType(app, type) {
   for (const method of ANCHOR_TYPE_METHODS) {
     if (typeof type[method] !== "function") throw new RegistryError(`Anchor type "${type.name}" needs a ${method}() method.`);
   }
-  if (!Array.isArray(type.reads)) throw new RegistryError(`Anchor type "${type.name}" must list the content types it reads.`);
-  return Object.freeze({ ...type, reads: [...type.reads] });
+  return Object.freeze({ ...type });
 }
 
 function checkDocumentType(app, type, anchorTypes) {
@@ -95,17 +97,11 @@ function checkDocumentType(app, type, anchorTypes) {
   for (const method of DOCUMENT_TYPE_METHODS) {
     if (typeof type[method] !== "function") throw new RegistryError(`Document type "${type.name}" needs a ${method}() method.`);
   }
-  const contentTypes = new Set(type.contentTypes ?? []);
   if (!type.anchorTypes?.length) throw new RegistryError(`Document type "${type.name}" must allow at least one anchor type.`);
   for (const name of type.anchorTypes) {
-    const anchorType = anchorTypes.get(name);
-    if (!anchorType) throw new RegistryError(`Document type "${type.name}" allows anchor type "${name}", which is not registered.`);
-    const missing = anchorType.reads.filter((c) => !contentTypes.has(c));
-    if (missing.length) {
-      throw new RegistryError(`Document type "${type.name}" allows "${name}", which reads content types it does not parse: ${missing.join(", ")}.`);
-    }
+    if (!anchorTypes.has(name)) throw new RegistryError(`Document type "${type.name}" allows anchor type "${name}", which is not registered.`);
   }
-  return Object.freeze({ ...type, contentTypes: [...contentTypes], anchorTypes: [...type.anchorTypes] });
+  return Object.freeze({ ...type, anchorTypes: [...type.anchorTypes] });
 }
 
 /** Checks that every table, index, view or trigger an app's migrations create is named under the app. */

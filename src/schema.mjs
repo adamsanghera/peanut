@@ -18,7 +18,7 @@ export const CORE_MIGRATIONS = [
 CREATE TABLE documents (
   id         INTEGER PRIMARY KEY,
   type       TEXT NOT NULL,          -- the document type, "<app>.<name>", from the registry
-  key        TEXT NOT NULL,          -- the app's; document filters match it whole or by prefix
+  key        TEXT NOT NULL,          -- the document key, the app's; filters match it whole or by prefix
   created_at TEXT NOT NULL,
   UNIQUE (type, key)
 );
