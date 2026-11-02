@@ -117,14 +117,16 @@ test("a whole-document thread is always placed and is named by its document type
 test("a line or a quote picks the block, and ambiguity is refused", () => {
   const v = parsed(V1);
   assert.equal(placed(block.create(v, { line: 5 }).anchor, v).blockIndex, 2);
-  assert.throws(() => block.create(v, { line: 2 }), /not in a heading, paragraph/);
+  assert.throws(() => block.create(v, { line: 2 }), /not inside a paragraph, heading/);
 
   const quoted = block.create(v, { quote: "stores   drifted" });
   assert.equal(placed(quoted.anchor, v).blockIndex, 2, "whitespace in a quote is collapsed");
   assert.equal(quoted.anchor.start, 8, "the quote's offset in its block");
-  assert.throws(() => block.create(v, { quote: "TBD" }), /appears in 2 blocks/);
+  assert.throws(() => block.create(v, { quote: "TBD" }), /appears in 2 blocks \(lines 9, 11\)/);
   assert.throws(() => block.create(v, { quote: "absent" }), /not in the doc/);
   assert.throws(() => block.create(v, {}), /by a line in it, or by a quote/);
+  assert.equal(placed(block.create(v, { line: 5, quote: "drifted" }).anchor, v).blockIndex, 2, "a line and a quote that agree");
+  assert.throws(() => block.create(v, { line: 9, quote: "drifted" }), /not in the block at line 9/);
 });
 
 test("blocks can count lines in a source that is not the content itself", () => {

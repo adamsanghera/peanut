@@ -182,24 +182,30 @@ function placementOf(blocks: Block[], block: Block): BlockPlacement {
   };
 }
 
-/** The block a spec names (see create()), or an AnchorError saying why there is none. */
+/**
+ * The block a spec names (see create()), or an AnchorError saying why there
+ * is none. A line and a quote together must agree: the quote must be in the
+ * block at that line. A quote alone must be in exactly one block; when it is
+ * in several, the error lists their first lines, so the caller can pick one.
+ */
 function pickBlock(blocks: Block[], { blockIndex, line, quote }: BlockSpec): Block {
   if (typeof blockIndex === "number" && Number.isInteger(blockIndex)) {
     const block = blocks[blockIndex];
-    if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${blocks.length}.`);
-    return block;
-  }
-  if (typeof line === "number" && Number.isInteger(line)) {
-    const block = blocks.find((b) => b.startLine <= line && line <= b.endLine);
-    if (!block) throw new AnchorError(`Line ${line} is not in a heading, paragraph, code block or table row. Pick a line with text on it.`);
+    if (!block) throw new AnchorError(`This version has no block ${blockIndex}; it has ${blocks.length}.`);
     return block;
   }
   const needle = normalizeText(quote ?? "");
+  if (typeof line === "number" && Number.isInteger(line)) {
+    const block = blocks.find((b) => b.startLine <= line && line <= b.endLine);
+    if (!block) throw new AnchorError(`Line ${line} is not inside a paragraph, heading, code block or table row.`);
+    if (!block.text.includes(needle)) throw new AnchorError(`The quote is not in the block at line ${line}.`);
+    return block;
+  }
   if (!needle) throw new AnchorError("Name the block by a line in it, or by a quote from it.");
   const hits = blocks.filter((b) => b.text.includes(needle));
   if (hits.length === 1) return hits[0]!;
   if (!hits.length) throw new AnchorError("The quote is not in the doc. Quote it as it reads, ignoring line breaks.");
-  throw new AnchorError(`The quote appears in ${hits.length} blocks. Quote more of it.`);
+  throw new AnchorError(`The quote appears in ${hits.length} blocks (lines ${hits.map((b) => b.startLine).join(", ")}). Name one by its line.`);
 }
 
 // Revisions parsed per anchor type, newest last. Placing every thread on a
@@ -231,10 +237,10 @@ export function markdownBlock({ tokenize }: MarkdownBlockOptions): AnchorType<Bl
 
     /**
      * spec names the block one of three ways: {blockIndex} (the viewer's
-     * selection), {line} (the block holding that line of the file), or
-     * {quote} alone (the one block containing that text). `quote` and
-     * `start` may ride along with the first two: the selected text and its
-     * offset in the block.
+     * selection), {line} (the block holding that line of the file, which must
+     * contain `quote` when one is given), or {quote} alone (the one block
+     * containing that text). `start` is the quote's offset in the block,
+     * found when not given.
      */
     create(revision, spec) {
       const block = pickBlock(blocksOf(revision), spec);
