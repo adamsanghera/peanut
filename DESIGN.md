@@ -35,7 +35,7 @@ apps build on.
 |---|---|---|---|
 | **app** | A namespace that registers document types, anchor types and its own tables | `mdview` | `diffview` |
 | **document** | One thing people comment on. It keeps its identity while its content changes | a `.md` file | a branch in a repo |
-| **document type** | What kind of document it is, named `<app>.<name>`. It says what a document key means, how to read the document's content, and how to parse it | `mdview.doc` | `diffview.branch`, `diffview.stack`, `diffview.description` |
+| **document type** | What kind of document it is, named `<app>.<name>`. It says what a document key means and how to read the document's content | `mdview.doc` | `diffview.branch`, `diffview.stack`, `diffview.description` |
 | **document key** | The app's string naming one document of a type, opaque to the core | `notes/plan.md` | `feat-x` |
 | **revision** | The document's content as it read when someone looked at it: `v1`, `v2`, and so on. A new one is recorded only when the content changes | the file's text | the branch's patch, plus base and head |
 | **anchor type** | A way of pinning a thread to part of a document and finding that part again in a later revision, named `<namespace>.<name>` | `markdown.block` | `diffview.lines`, `diffview.file`, `core.whole`, `markdown.block` |
@@ -50,7 +50,7 @@ is still in the human's pending batch.
 
 | The core owns | Each app owns |
 |---|---|
-| documents, revisions, threads, messages | what a document key means, and how to read and parse a document's content |
+| documents, revisions, threads, messages | what a document key means, and how to read a document's content |
 | statuses and who may change them (agents suggest, humans resolve and reopen) | its document types and anchor types |
 | whose turn it is (`thread_facts`), the pending batch, sending it | its own tables, e.g. diffview's viewed files, stack members and description links |
 | placing each thread's anchor in a revision: current, carried or outdated | how a placement looks: labels in the terminal, highlights on the page |
@@ -67,7 +67,6 @@ is still in the human's pending batch.
   noun: "doc",                          // in messages: "the whole doc"
   anchorTypes: ["markdown.block", "core.whole"],
   readContent(key) { return { content, meta } },  // as the document reads now; null when it is gone
-  parse(revision) { return { markdown: { source, blocks } } },   // what its anchor types read
   displayName(key) { return "plan.md" },
 }
 ```
@@ -78,27 +77,26 @@ is still in the human's pending batch.
   diffview's base and head) is stored with the revision that first had that
   content. So a rebase that leaves a branch's patch alone is not a new
   revision, as diffview behaves today.
-- `parse()` runs once per revision per process, and the result is cached.
-  The core never looks inside it: it only hands it to anchor types. What
-  goes in it is an agreement between a document type and the anchor types
-  it lists. `markdown.block` reads `parsed.markdown`, so any document type
-  that offers it puts `{source, blocks}` there.
-- A parsed value may hold functions that do work only when called:
-  diffview's `parsed.diff` carries `fileText(path, side)`, which reads a
-  blob from git only when a line anchor on unchanged lines asks for it.
+- A document type does not parse its content. Its anchor types do (see
+  below), so nothing has to agree on a parsed shape.
 
 ## Anchor types
 
 ```js
 {
   name: "markdown.block",
-  create(parsed, spec) { return { anchor, quote } },     // or throws AnchorError, worded for the user
-  place(anchor, parsed) { return placement ?? null },    // null: its text is gone from this revision
+  create(revision, spec) { return { anchor, quote } },     // or throws AnchorError, worded for the user
+  place(anchor, revision) { return placement ?? null },    // null: its text is gone from this revision
   successor(anchor, from, to) { return placement ?? null },   // optional: what an outdated anchor's text became
   label(anchor, placement, documentType) { return 'under "How"' },
-  excerpt(anchor, placement, parsed) { return "..." },        // optional: source text for `show`
+  excerpt(anchor, placement, revision) { return "..." },        // optional: source text for `show`
 }
 ```
+
+Every method gets revisions as the store holds them, `{seq, sha256, content,
+meta}`, and parses what it needs itself. An anchor type caches its parse by
+the revision's `sha256`, so placing fifty threads in one revision parses it
+once.
 
 The core derives a thread's state, so every anchor type means the same thing
 by it:
@@ -112,16 +110,17 @@ by it:
 Anchor types are named by who defines them, not who uses them, so apps can
 share them:
 
-- `core.whole`: the whole document. Reads nothing and is always placed. It
+- `core.whole`: the whole document. Parses nothing and is always placed. It
   replaces diffview's "whole branch" threads, and is how mdview could offer
   comments on a doc as a whole.
 - `markdown.block`: today's identical `blocks.mjs`, plus the
-  `successor()` both stores copy. It reads `parsed.markdown`, which is
-  `{source, blocks}`. Apps keep their own markdown-it setup and hand the core
-  tokens, because which plugins run changes the tokens, and so the blocks'
-  hashes.
-- `diffview.lines` and `diffview.file` stay in diffview. They read
-  `parsed.diff`, which only diffview defines.
+  `successor()` both stores copy. An app makes its own with
+  `markdownBlock({ tokenize })`, handing over its markdown-it setup, because
+  which plugins run changes the tokens, and so the blocks' hashes.
+- `diffview.lines` and `diffview.file` stay in diffview. They parse the
+  revision's patch, and read a file's unchanged lines from git, using the
+  repo and commits in the revision's `meta`, only when a thread on those
+  lines asks.
 
 ## How the apps map onto it
 
