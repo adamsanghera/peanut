@@ -2,22 +2,25 @@
  * The apps a process uses, and their document types and anchor types,
  * checked once at registration so the store can trust them.
  *
- * peanut's own anchor types are always present. A document type may list any
- * anchor type already registered, its app's own or another app's, so an app
- * that shares one must be registered after the app that defines it.
+ * core.whole is always present. markdown.block is made per app, because it
+ * parses with the app's markdown-it (markdownBlock()), so an app registers
+ * its own under that name. A document type may list any anchor type already
+ * registered, its app's own or another app's, so an app that shares one must
+ * be registered after the app that defines it.
  */
-import * as markdownBlock from "./anchors/markdown-block.mjs";
 import * as whole from "./anchors/whole.mjs";
 import { RegistryError } from "./errors.mjs";
 
 /** Namespaces peanut keeps for itself. */
 export const RESERVED = new Set(["core", "markdown"]);
-const BUILT_INS = [whole.anchorType, markdownBlock.anchorType];
+const BUILT_INS = [whole.anchorType];
+// Anchor types peanut ships as factories: an app registers its own, under peanut's name.
+const MADE_PER_APP = new Set(["markdown.block"]);
 
 const APP_NAME = /^[a-z][a-z0-9]*$/;
 const FOLDER_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 const QUALIFIED = /^([a-z][a-z0-9]*)\.([a-z][a-z0-9-]*)$/;
-const DOCUMENT_TYPE_METHODS = ["readContent", "parse", "displayName"];
+const DOCUMENT_TYPE_METHODS = ["readContent", "displayName"];
 const ANCHOR_TYPE_METHODS = ["create", "place", "label"];
 // CREATE TABLE, INDEX, VIEW or TRIGGER, with optional IF NOT EXISTS, and the name after it.
 const CREATED_NAME = /\bCREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|VIEW|TRIGGER)\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?(\w+)/gi;
@@ -84,7 +87,7 @@ function qualified(app, what, name) {
 }
 
 function checkAnchorType(app, type) {
-  qualified(app, "Anchor type", type?.name);
+  if (!MADE_PER_APP.has(type?.name)) qualified(app, "Anchor type", type?.name);
   for (const method of ANCHOR_TYPE_METHODS) {
     if (typeof type[method] !== "function") throw new RegistryError(`Anchor type "${type.name}" needs a ${method}() method.`);
   }

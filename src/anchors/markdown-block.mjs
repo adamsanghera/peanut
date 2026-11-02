@@ -8,7 +8,8 @@
  * is outdated, and successor() guesses what the block became.
  *
  * This is mdview's blocks.mjs, which diffview copied byte for byte for its
- * descriptions, plus the successor() both stores copied.
+ * descriptions, plus the successor() both stores copied. An app registers
+ * the one markdownBlock() makes for it, with its own markdown-it setup.
  */
 import { createHash } from "node:crypto";
 import { AnchorError } from "../errors.mjs";
@@ -122,76 +123,95 @@ function wordSet(text) {
 }
 
 /** A block's placement: which block, its lines, and the heading it sits under. */
-function placementOf(markdown, block) {
+function placementOf(blocks, block) {
   return {
     blockIndex: block.index,
     lines: [block.startLine, block.endLine],
-    heading: headingAbove(markdown.blocks, block.index),
+    heading: headingAbove(blocks, block.index),
   };
 }
 
-/** `parsed.markdown`, or an error naming the document type's mistake. */
-function markdownOf(parsed) {
-  if (!parsed?.markdown?.blocks) throw new TypeError("markdown.block reads parsed.markdown ({source, blocks}), which this document type's parse() did not return.");
-  return parsed.markdown;
-}
+// Revisions parsed per anchor type, newest last. Placing every thread on a
+// page touches one or two revisions, so a few dozen covers any read.
+const PARSED_REVISIONS = 32;
 
-/** @type {import("../types.mjs").AnchorType} */
-export const anchorType = {
-  name: "markdown.block",
+/**
+ * Makes the markdown.block anchor type for an app, parsing revisions with
+ * the app's own markdown-it setup: `tokenize(content)` returns
+ * `{tokens, lineOffset}`, where `lineOffset` counts front matter lines cut
+ * off before parsing. Each app makes its own because which plugins run
+ * changes the tokens, and so the blocks' hashes.
+ *
+ * @param {{ tokenize: (content: string) => { tokens: any[], lineOffset?: number } }} options
+ * @returns {import("../types.mjs").AnchorType}
+ */
+export function markdownBlock({ tokenize }) {
+  const cache = new Map();
+  const blocksOf = (revision) => {
+    let blocks = cache.get(revision.sha256);
+    if (blocks) return blocks;
+    const { tokens, lineOffset = 0 } = tokenize(revision.content);
+    blocks = extractBlocks(tokens, lineOffset);
+    cache.set(revision.sha256, blocks);
+    if (cache.size > PARSED_REVISIONS) cache.delete(cache.keys().next().value);
+    return blocks;
+  };
 
-  /** spec: {blockIndex, quote?, start?}: a block, and optionally the selected text in it and its offset. */
-  create(parsed, { blockIndex, quote = "", start = null }) {
-    const markdown = markdownOf(parsed);
-    const block = markdown.blocks[blockIndex];
-    if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${markdown.blocks.length}.`);
-    return { anchor: { blockSha: block.sha, ordinal: block.ordinal, start }, quote };
-  },
+  return {
+    name: "markdown.block",
 
-  place(anchor, parsed) {
-    const markdown = markdownOf(parsed);
-    const block = findBlock(anchor, markdown.blocks);
-    return block && placementOf(markdown, block);
-  },
+    /** spec: {blockIndex, quote?, start?}: a block, and optionally the selected text in it and its offset. */
+    create(revision, { blockIndex, quote = "", start = null }) {
+      const blocks = blocksOf(revision);
+      const block = blocks[blockIndex];
+      if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${blocks.length}.`);
+      return { anchor: { blockSha: block.sha, ordinal: block.ordinal, start }, quote };
+    },
 
-  /**
-   * Guesses what an outdated block became: the most similar block of the same
-   * kind among those whose text is new since the thread's revision. Null
-   * when nothing is similar enough, as when the block was removed or
-   * rewritten from scratch.
-   */
-  successor(anchor, from, to) {
-    const before = markdownOf(from);
-    const after = markdownOf(to);
-    const block = findBlock(anchor, before.blocks);
-    if (!block) return null;
-    const kept = new Set(before.blocks.map((b) => b.sha));
-    const words = wordSet(block.text);
-    let best = null;
-    let bestScore = 0;
-    for (const candidate of after.blocks) {
-      if (candidate.kind !== block.kind || kept.has(candidate.sha)) continue;
-      const other = wordSet(candidate.text);
-      let shared = 0;
-      for (const word of words) if (other.has(word)) shared++;
-      const score = (2 * shared) / (words.size + other.size || 1);
-      if (score > bestScore) {
-        best = candidate;
-        bestScore = score;
+    place(anchor, revision) {
+      const blocks = blocksOf(revision);
+      const block = findBlock(anchor, blocks);
+      return block && placementOf(blocks, block);
+    },
+
+    /**
+     * Guesses what an outdated block became: the most similar block of the
+     * same kind among those whose text is new since the thread's revision.
+     * Null when nothing is similar enough, as when the block was removed or
+     * rewritten from scratch.
+     */
+    successor(anchor, from, to) {
+      const before = blocksOf(from);
+      const after = blocksOf(to);
+      const block = findBlock(anchor, before);
+      if (!block) return null;
+      const kept = new Set(before.map((b) => b.sha));
+      const words = wordSet(block.text);
+      let best = null;
+      let bestScore = 0;
+      for (const candidate of after) {
+        if (candidate.kind !== block.kind || kept.has(candidate.sha)) continue;
+        const other = wordSet(candidate.text);
+        let shared = 0;
+        for (const word of words) if (other.has(word)) shared++;
+        const score = (2 * shared) / (words.size + other.size || 1);
+        if (score > bestScore) {
+          best = candidate;
+          bestScore = score;
+        }
       }
-    }
-    return bestScore >= SUCCESSOR_SIMILARITY ? placementOf(after, best) : null;
-  },
+      return bestScore >= SUCCESSOR_SIMILARITY ? placementOf(after, best) : null;
+    },
 
-  label(_anchor, placement) {
-    if (!placement) return "a block that is gone";
-    const [start, end] = placement.lines;
-    const lines = start === end ? `line ${start}` : `lines ${start}-${end}`;
-    return placement.heading ? `under "${placement.heading}", ${lines}` : lines;
-  },
+    label(_anchor, placement) {
+      if (!placement) return "a block that is gone";
+      const [start, end] = placement.lines;
+      const lines = start === end ? `line ${start}` : `lines ${start}-${end}`;
+      return placement.heading ? `under "${placement.heading}", ${lines}` : lines;
+    },
 
-  excerpt(_anchor, placement, parsed) {
-    const markdown = markdownOf(parsed);
-    return sourceLines(markdown.source, markdown.blocks[placement.blockIndex]);
-  },
-};
+    excerpt(_anchor, placement, revision) {
+      return sourceLines(revision.content, blocksOf(revision)[placement.blockIndex]);
+    },
+  };
+}

@@ -2,13 +2,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import MarkdownIt from "markdown-it";
 import { AnchorError } from "../src/index.mjs";
-import { anchorType as block, extractBlocks } from "../src/anchors/markdown-block.mjs";
+import { createHash } from "node:crypto";
+import { extractBlocks, markdownBlock } from "../src/anchors/markdown-block.mjs";
 import { anchorType as whole } from "../src/anchors/whole.mjs";
 
 const md = new MarkdownIt();
 
+let tokenized = 0;
+const block = markdownBlock({
+  tokenize(content) {
+    tokenized++;
+    return { tokens: md.parse(content, {}) };
+  },
+});
+
 function parsed(source) {
-  return { markdown: { source, blocks: extractBlocks(md.parse(source, {})) } };
+  return { seq: 1, sha256: createHash("sha256").update(source).digest("hex"), content: source, meta: {} };
 }
 
 const V1 = `# Plan
@@ -25,7 +34,7 @@ TBD
 `;
 
 test("blocks are headings, paragraphs, code and rows, with their lines", () => {
-  const { blocks } = parsed(V1).markdown;
+  const blocks = extractBlocks(md.parse(V1, {}));
   assert.deepEqual(
     blocks.map((b) => [b.kind, b.text, b.startLine, b.endLine, b.ordinal]),
     [
@@ -72,8 +81,19 @@ test("a block that is not there is an AnchorError", () => {
   assert.throws(() => block.create(parsed(V1), { blockIndex: 99 }), AnchorError);
 });
 
-test("a document type that does not parse to markdown is told so", () => {
-  assert.throws(() => block.place({ blockSha: "x", ordinal: 0 }, { diff: {} }), /reads parsed.markdown/);
+test("a revision is parsed once, however many threads are placed in it", () => {
+  const v = parsed("# Once\n\nOnly once.\n");
+  const before = tokenized;
+  const { anchor } = block.create(v, { blockIndex: 1 });
+  for (let i = 0; i < 50; i++) block.place(anchor, v);
+  assert.equal(tokenized - before, 1);
+});
+
+test("front matter cut before parsing is added back to the lines", () => {
+  const withFrontMatter = markdownBlock({ tokenize: (content) => ({ tokens: md.parse(content.split("---\n")[2], {}), lineOffset: 3 }) });
+  const v = parsed("---\ntitle: x\n---\n# Heading\n");
+  const { anchor } = withFrontMatter.create(v, { blockIndex: 0 });
+  assert.deepEqual(withFrontMatter.place(anchor, v).lines, [4, 4]);
 });
 
 test("a whole-document thread is always placed and is named by its document type's noun", () => {

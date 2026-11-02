@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Registry, RegistryError } from "../src/index.mjs";
+import { markdownBlock, Registry, RegistryError } from "../src/index.mjs";
 
 const noop = () => null;
 
 function documentType(overrides = {}) {
-  return { name: "notes.page", noun: "page", anchorTypes: ["markdown.block"], readContent: noop, parse: noop, displayName: noop, ...overrides };
+  return { name: "notes.page", noun: "page", anchorTypes: ["core.whole"], readContent: noop, displayName: noop, ...overrides };
 }
 
 function anchorType(overrides = {}) {
   return { name: "code.lines", create: noop, place: noop, label: noop, ...overrides };
 }
 
-test("an app's document types may use peanut's anchor types", () => {
-  const registry = new Registry().register({ name: "notes", documentTypes: [documentType({ anchorTypes: ["markdown.block", "core.whole"] })] });
+test("an app's document types may use core.whole, and the markdown.block it made", () => {
+  const block = markdownBlock({ tokenize: () => ({ tokens: [] }) });
+  const registry = new Registry().register({ name: "notes", anchorTypes: [block], documentTypes: [documentType({ anchorTypes: ["markdown.block", "core.whole"] })] });
+  assert.equal(registry.anchorType("markdown.block"), registry.apps()[0].anchorTypes[0]);
   assert.equal(registry.documentType("notes.page").noun, "page");
   assert.ok(registry.allows("notes.page", "core.whole"));
   assert.ok(!registry.allows("notes.page", "code.lines"));
@@ -38,6 +40,11 @@ test("names must sit under their app", () => {
   assert.throws(() => new Registry().register({ name: "notes", documentTypes: [documentType({ name: "other.page" })] }), /must be named under its app: "notes.page"/);
   assert.throws(() => new Registry().register({ name: "notes", anchorTypes: [anchorType()] }), /"notes.lines"/);
   assert.throws(() => new Registry().register({ name: "notes", documentTypes: [documentType({ name: "page" })] }), /<namespace>.<name>/);
+});
+
+test("markdown.block is not there until an app registers one", () => {
+  assert.throws(() => new Registry().register({ name: "notes", documentTypes: [documentType({ anchorTypes: ["markdown.block"] })] }), /not registered/);
+  assert.throws(() => new Registry().register({ name: "notes", anchorTypes: [anchorType({ name: "markdown.table" })] }), /must be named under its app/);
 });
 
 test("peanut's namespaces and taken names are refused", () => {

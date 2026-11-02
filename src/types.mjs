@@ -21,8 +21,8 @@
  */
 
 /**
- * What kind of document something is: what its document key means, how to
- * read its content, and how to parse a revision of it.
+ * What kind of document something is: what its document key means, and how
+ * to read its content. It never parses the content; its anchor types do.
  *
  * @typedef {object} DocumentType
  * @property {string} name                       "<app>.<name>", e.g. "mdview.doc".
@@ -30,8 +30,6 @@
  * @property {string[]} anchorTypes              Anchor types threads on it may use.
  * @property {(key: string) => RevisionInput | null} readContent
  *   The document's content as it reads now, or null when it is gone.
- * @property {(revision: Revision) => ParsedContent} parse
- *   Parses a revision into what its anchor types read, once per revision per process.
  * @property {(key: string) => string} displayName
  *   A short name for the document: "plan.md", "feat-x".
  */
@@ -58,26 +56,9 @@
  */
 
 /**
- * A revision as parse() returns it. The core never looks inside: it only
- * hands it to anchor types, and what goes in it is an agreement between a
- * document type and the anchor types it lists. markdown.block reads
- * `parsed.markdown`; diffview's line anchors read `parsed.diff`. A value
- * may hold functions that do work only when called.
+ * A block of a Markdown revision, as markdown.block finds them with
+ * extractBlocks().
  *
- * @typedef {Record<string, any>} ParsedContent
- */
-
-/**
- * `parsed.markdown`, which markdown.block reads. Apps build it
- * with extractBlocks() over tokens from their own markdown-it, so their
- * plugins decide the blocks.
- *
- * @typedef {object} MarkdownContent
- * @property {string} source                     The Markdown as the file reads.
- * @property {Block[]} blocks
- */
-
-/**
  * @typedef {object} Block
  * @property {number} index
  * @property {"heading" | "paragraph" | "code" | "row"} kind
@@ -101,20 +82,21 @@
  * was made on the revision shown, carried when made earlier and still
  * placed, outdated when place() returns null.
  *
- * Every method is synchronous: the store runs them inside reads and
- * transactions.
+ * Each method gets revisions as the store holds them, parses what it needs
+ * itself, and caches that by the revision's sha256. Every method is
+ * synchronous: the store runs them inside reads and transactions.
  *
  * @typedef {object} AnchorType
  * @property {string} name                       "<namespace>.<name>", e.g. "markdown.block".
- * @property {(parsed: ParsedContent, spec: object) => { anchor: object, quote: string }} create
+ * @property {(revision: Revision, spec: object) => { anchor: object, quote: string }} create
  *   Pins a new thread from a spec the app's UI or CLI built. Throws AnchorError, worded for the user.
- * @property {(anchor: object, parsed: ParsedContent) => object | null} place
+ * @property {(anchor: object, revision: Revision) => object | null} place
  *   The anchor's placement in a revision, or null when its text is gone.
- * @property {(anchor: object, from: ParsedContent, to: ParsedContent) => object | null} [successor]
+ * @property {(anchor: object, from: Revision, to: Revision) => object | null} [successor]
  *   For an outdated anchor: the placement in `to` most likely to be what its text became.
  * @property {(anchor: object, placement: object | null, documentType: DocumentType) => string} label
  *   Where the thread sits, in words: 'under "How", line 12', "src/a.js lines 4-6".
- * @property {(anchor: object, placement: object, parsed: ParsedContent) => string} [excerpt]
+ * @property {(anchor: object, placement: object, revision: Revision) => string} [excerpt]
  *   Source text at the placement, for the CLI's `show`.
  */
 

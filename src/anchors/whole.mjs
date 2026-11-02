@@ -1,5 +1,5 @@
 /**
- * core.whole: a thread on a document as a whole. It reads nothing and is
+ * core.whole: a thread on a document as a whole. It parses nothing and is
  * always placed, so it is never outdated. diffview's "whole branch"
  * threads and threads on a stack are this.
  */
