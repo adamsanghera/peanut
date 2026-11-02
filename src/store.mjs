@@ -2,10 +2,6 @@
  * The comment store: one SQLite file per app folder, holding threads on
  * documents and the revisions of those documents they were made on.
  *
- * Ported from diffview's store (~/mono/diff-viewer/lib/store.mjs), which
- * followed mdview's, with everything about diffs and Markdown moved behind
- * document types and anchor types (registry.mjs).
- *
  * Nothing can rebuild this data, and peanut never writes a document. A
  * document becomes tracked with its first thread. From then on, every
  * observe() records its content as a new revision when it changed, so each
