@@ -154,6 +154,7 @@ wins:
 2. **A project folder**: the nearest `.diffview/` folder above the document
    (for mdview, the doc's folder; for diffview, the repo's worktree root).
    To keep a project's comments in the project, run `mkdir .diffview`.
+   It stays out of git (see Decisions).
 3. `home` in `~/.config/diffview/config.json`.
 4. `~/.diffview`.
 
@@ -296,16 +297,9 @@ maps a placement to elements on the page.
 - **No cross-app CLI for now.** Agents use each app's comments CLI.
 - **One store per app by default**, in the app's own folder, at home or in a
   project.
-
-## Open questions
-
-1. **Project folders in git.** Should a project's `.diffview/` be
-   committed? SQLite has no text format on disk, so its file is binary and
-   does not merge. If comments should travel with the repo (to another
-   machine, or a teammate), the project folder needs text as the source of
-   truth: one JSON Lines file per thread, appended to and never rewritten,
-   with `merge=union` in `.gitattributes` so git keeps both sides' new lines
-   instead of conflicting. The SQLite file becomes a gitignored cache built
-   from those files. Ids then have to be unique without a shared counter,
-   such as ULIDs. If the folder only keeps comments next to the work,
-   gitignored, SQLite is fine as is.
+- **Comments are not committed.** A project folder keeps comments next to the
+  work, not in its history, so SQLite stays the only format and ids stay
+  plain integers. When peanut creates a store in a project folder, it writes
+  a `.gitignore` there holding `*`, so the folder never lands in a commit by
+  accident. Sharing comments through git would mean append-only text files
+  as the source of truth, which we can add later if it is ever wanted.
