@@ -101,3 +101,16 @@ test("a whole-document thread is always placed and is named by its document type
   assert.deepEqual(whole.place(anchor, {}), {});
   assert.equal(whole.label(anchor, {}, { noun: "branch" }), "the whole branch");
 });
+
+test("a line or a quote picks the block, and ambiguity is refused", () => {
+  const v = parsed(V1);
+  assert.equal(block.place(block.create(v, { line: 5 }).anchor, v).blockIndex, 2);
+  assert.throws(() => block.create(v, { line: 2 }), /not in a heading, paragraph/);
+
+  const quoted = block.create(v, { quote: "stores   drifted" });
+  assert.equal(block.place(quoted.anchor, v).blockIndex, 2, "whitespace in a quote is collapsed");
+  assert.equal(quoted.anchor.start, 8, "the quote's offset in its block");
+  assert.throws(() => block.create(v, { quote: "TBD" }), /appears in 2 blocks/);
+  assert.throws(() => block.create(v, { quote: "absent" }), /not in the doc/);
+  assert.throws(() => block.create(v, {}), /by a line in it, or by a quote/);
+});

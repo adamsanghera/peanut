@@ -131,6 +131,26 @@ function placementOf(blocks, block) {
   };
 }
 
+/** The block a spec names (see create()), or an AnchorError saying why there is none. */
+function pickBlock(blocks, { blockIndex, line, quote }) {
+  if (Number.isInteger(blockIndex)) {
+    const block = blocks[blockIndex];
+    if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${blocks.length}.`);
+    return block;
+  }
+  if (Number.isInteger(line)) {
+    const block = blocks.find((b) => b.startLine <= line && line <= b.endLine);
+    if (!block) throw new AnchorError(`Line ${line} is not in a heading, paragraph, code block or table row. Pick a line with text on it.`);
+    return block;
+  }
+  const needle = normalizeText(quote ?? "");
+  if (!needle) throw new AnchorError("Name the block by a line in it, or by a quote from it.");
+  const hits = blocks.filter((b) => b.text.includes(needle));
+  if (hits.length === 1) return hits[0];
+  if (!hits.length) throw new AnchorError("The quote is not in the doc. Quote it as it reads, ignoring line breaks.");
+  throw new AnchorError(`The quote appears in ${hits.length} blocks. Quote more of it.`);
+}
+
 // Revisions parsed per anchor type, newest last. Placing every thread on a
 // page touches one or two revisions, so a few dozen covers any read.
 const PARSED_REVISIONS = 32;
@@ -160,11 +180,17 @@ export function markdownBlock({ tokenize }) {
   return {
     name: "markdown.block",
 
-    /** spec: {blockIndex, quote?, start?}: a block, and optionally the selected text in it and its offset. */
-    create(revision, { blockIndex, quote = "", start = null }) {
-      const blocks = blocksOf(revision);
-      const block = blocks[blockIndex];
-      if (!block) throw new AnchorError(`There is no block ${blockIndex}; the doc has ${blocks.length}.`);
+    /**
+     * spec names the block one of three ways: {blockIndex} (the viewer's
+     * selection), {line} (the block holding that line of the file), or
+     * {quote} alone (the one block containing that text). `quote` and
+     * `start` may ride along with the first two: the selected text and its
+     * offset in the block.
+     */
+    create(revision, spec) {
+      const block = pickBlock(blocksOf(revision), spec);
+      const quote = spec.quote ?? "";
+      const start = Number.isInteger(spec.start) ? spec.start : quote ? Math.max(0, block.text.indexOf(normalizeText(quote))) : null;
       return { anchor: { blockSha: block.sha, ordinal: block.ordinal, start }, quote };
     },
 
