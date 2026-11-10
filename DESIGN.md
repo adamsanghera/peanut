@@ -183,9 +183,10 @@ writes that take a sequence number. Deleting stays human-only.
 ```sql
 documents (id, type, key, created_at, UNIQUE (type, key))
 revisions (id, document_id, seq, sha256, content, meta /* JSON */, observed_at, UNIQUE (document_id, seq))
-threads   (id, document_id, revision_id, anchor_type, anchor /* JSON */, quote,
-           status, status_by, status_at, created_at)
-messages  (id, thread_id, revision_id, author, author_kind, session, body, created_at, sent_at)
+threads   (id, uid, document_id, revision_id, anchor_type, anchor /* JSON */, quote,
+           status, status_by, status_at, status_seq, created_at)
+messages  (id, uid, thread_id, revision_id, author, author_kind, session, body, created_at, sent_at)
+tombstones (uid, kind, deleted_at)  -- deletes, carried across a merge
 thread_facts  -- view: draft, first message, waiting_on; unchanged from today
 migrations (namespace, version)
 ```
@@ -203,6 +204,31 @@ migrations (namespace, version)
   peanut's tables, keeping every thread and message id, so ids agents have
   already seen still work. The old file is never written, so it stays as the
   backup.
+
+## Copies of a store on more than one machine
+
+A store can be copied to another machine (by a git-backed SQLite sync, say)
+and the copies merged back together with `store.merge(otherFile)`.
+
+- **Stable ids.** Every thread and message has a `uid`, a random UUID that
+  is the same in every copy. The integer `id` stays the primary key and what
+  people and URLs name (`#12`), but it is local to one copy: a row that
+  arrives by merge gets the next local id. Every method that takes a thread
+  or message id also takes its uid. Documents match by type and key, and
+  revisions by content hash, so they need no uid. A revision that arrives
+  takes the next local `seq`.
+- **Status.** `status_seq` counts a thread's status changes. In a merge the
+  later change wins, by that count. Of two concurrent changes, resolve wins,
+  then suggested, then the later time. So a resolve beats an agent's
+  suggestion made at the same time, but a reopen made after seeing the
+  resolve survives.
+- **Deletes win.** Deleting a thread or a message records a tombstone, which
+  merges like any row and deletes it from the other copy too.
+- **The batch stays local.** Drafts and pending messages are not merged.
+  They belong to the human at one keyboard until sent.
+- Merging is idempotent and commutative, so merging both ways leaves both
+  copies holding the same threads, messages and statuses. Apps merge their
+  own tables.
 
 ## Which documents a command covers
 

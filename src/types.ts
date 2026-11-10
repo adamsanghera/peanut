@@ -130,8 +130,17 @@ export interface DocumentInfo {
   displayName: string;
 }
 
+/**
+ * How callers name a thread or message: its integer id, local to one store
+ * (what "#12" and URLs show), or its uid, the same in every copy of the
+ * store. A string of digits is an id.
+ */
+export type Ref = number | string;
+
 export interface Message {
   id: number;
+  /** Stable across copies of the store, so merges match it. */
+  uid: string;
   author: string;
   authorKind: Author["kind"];
   session: string | null;
@@ -147,6 +156,8 @@ export interface Message {
 /** A thread as reads return it, placed in one revision. */
 export interface ThreadView {
   id: number;
+  /** Stable across copies of the store, so merges match it. */
+  uid: string;
   status: Status;
   /** A draft: its first message is still in the human's batch. */
   pending: boolean;

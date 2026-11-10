@@ -23,13 +23,13 @@
  * the whole batch at once. A thread is a draft while its first message is
  * pending, and anything added to a draft joins it.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { StoreError } from "./errors.ts";
 import { filterSql } from "./filter.ts";
 import type { Registry } from "./registry.ts";
-import { migrate } from "./schema.ts";
+import { CORE_MIGRATIONS, migrate } from "./schema.ts";
 import type {
   Author,
   DocumentFilter,
@@ -37,6 +37,7 @@ import type {
   JsonObject,
   Message,
   Revision,
+  Ref,
   RevisionInput,
   Status,
   StoredRevision,
@@ -77,6 +78,7 @@ interface RevisionRow {
 
 interface ThreadRow {
   id: number;
+  uid: string;
   document_id: number;
   revision_id: number;
   anchor_type: string;
@@ -85,6 +87,7 @@ interface ThreadRow {
   status: Status;
   status_by: string | null;
   status_at: string | null;
+  status_seq: number;
   created_at: string;
   first_message_id: number;
   draft: number;
@@ -93,6 +96,7 @@ interface ThreadRow {
 
 interface MessageRow {
   id: number;
+  uid: string;
   thread_id: number;
   author: string;
   author_kind: Author["kind"];
@@ -137,10 +141,46 @@ export interface CreateThread {
   pending?: boolean;
 }
 
-export type Action = { reply: number; message: string } | { suggestResolve: number; message: string };
+export type Action = { reply: Ref; message: string } | { suggestResolve: Ref; message: string };
+
+/** What a merge brought in from the other store. */
+export interface MergeReport {
+  threads: number;
+  messages: number;
+  /** Threads whose status the other store's won. */
+  statuses: number;
+  /** Threads and messages deleted because the other store had deleted them. */
+  deleted: number;
+}
+
+// Of two concurrent status changes, the one ranked higher wins: resolve wins.
+const STATUS_RANK: Record<Status, number> = { open: 0, suggested: 1, resolved: 2 };
+
+type StatusFields = Pick<ThreadRow, "status" | "status_by" | "status_at" | "status_seq">;
+
+/**
+ * Whether `incoming`'s status should replace `local`'s in a merge: the later
+ * change wins, by status_seq; between concurrent ones, the higher-ranked
+ * status, then the later time and author, so both copies pick the same.
+ */
+function statusWins(incoming: StatusFields, local: StatusFields): boolean {
+  const key = (t: StatusFields) => [Number(t.status_seq), STATUS_RANK[t.status], t.status_at ?? "", t.status_by ?? ""] as const;
+  const [a, b] = [key(incoming), key(local)];
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
+  return false;
+}
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+/** Whether `ref` is an integer id (a number, or a string of digits) rather than a uid. */
+function isId(ref: Ref): boolean {
+  return typeof ref === "number" || /^\d+$/.test(ref);
+}
+
+function isRef(ref: unknown): ref is Ref {
+  return Number.isInteger(ref) || (typeof ref === "string" && ref.length > 0);
 }
 
 function now(): string {
@@ -265,8 +305,9 @@ export class Store {
       const document = this.#findOrInsertDocument(type, key);
       const revision = this.#revisionBySha(document.id, seen.sha256) ?? this.#recordRevision(document.id, input);
       const thread = this.#get<{ id: number }>(
-        `INSERT INTO threads (document_id, revision_id, anchor_type, anchor, quote, created_at)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO threads (uid, document_id, revision_id, anchor_type, anchor, quote, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        randomUUID(),
         document.id,
         revision.id,
         anchorType,
@@ -286,7 +327,7 @@ export class Store {
    * batch is sent. A reply to a draft thread is pending too, so no agent ever
    * sees a reply before the comment it answers.
    */
-  reply(threadId: number, body: string, author: Author, { pending = false } = {}): void {
+  reply(threadId: Ref, body: string, author: Author, { pending = false } = {}): void {
     if (!body?.trim()) throw new StoreError("A reply needs a message.");
     if (pending && author.kind !== "human") throw new StoreError("Only a human batches comments.");
     this.#transaction(() => {
@@ -304,7 +345,7 @@ export class Store {
    * records "Reopened." so the thread shows it waits on the agent again.
    * With `pending`, that message joins the human's batch.
    */
-  setStatus(threadId: number, status: Status, author: Author, body?: string, { pending = false } = {}): void {
+  setStatus(threadId: Ref, status: Status, author: Author, body?: string, { pending = false } = {}): void {
     this.#transaction(() => this.#setStatus(threadId, status, author, body, { pending }));
   }
 
@@ -318,11 +359,11 @@ export class Store {
       actions.forEach((action, i) => {
         const where = `Action ${i + 1}`;
         if (typeof action?.message !== "string" || !action.message.trim()) throw new StoreError(`${where} needs a message.`);
-        if ("reply" in action && Number.isInteger(action.reply)) {
+        if ("reply" in action && isRef(action.reply)) {
           const thread = this.#visibleThreadRow(action.reply, author);
           this.#insertMessage(thread.id, this.#latestRevision(thread.document_id)!.id, action.message, author, false);
           this.#writes++;
-        } else if ("suggestResolve" in action && Number.isInteger(action.suggestResolve)) {
+        } else if ("suggestResolve" in action && isRef(action.suggestResolve)) {
           this.#setStatus(action.suggestResolve, "suggested", author, action.message, { pending: false });
         } else {
           throw new StoreError(`${where} must name a thread with "reply" or "suggestResolve".`);
@@ -372,23 +413,29 @@ export class Store {
    * was the document's last thread, its stored revisions go too, because only
    * documents with threads keep copies.
    */
-  deleteThread(threadId: number, author: Author): void {
+  deleteThread(threadId: Ref, author: Author): void {
     if (author.kind !== "human") throw new StoreError("Only a human deletes comments.");
     this.#transaction(() => {
       const thread = this.#threadRow(threadId);
+      this.#tombstone(thread.uid, "thread");
       this.#deleteThreadRows(thread.id, thread.document_id);
       this.#writes++;
     });
   }
 
   /** Permanently deletes one reply. Only a human may. The first message goes only with its thread. */
-  deleteMessage(threadId: number, messageId: number, author: Author): void {
+  deleteMessage(threadId: Ref, messageId: Ref, author: Author): void {
     if (author.kind !== "human") throw new StoreError("Only a human deletes comments.");
     this.#transaction(() => {
       const thread = this.#threadRow(threadId);
-      const message = this.#get<{ id: number }>("SELECT id FROM messages WHERE id = ? AND thread_id = ?", Number(messageId), thread.id);
+      const message = this.#get<{ id: number; uid: string }>(
+        `SELECT id, uid FROM messages WHERE ${isId(messageId) ? "id" : "uid"} = ? AND thread_id = ?`,
+        isId(messageId) ? Number(messageId) : String(messageId),
+        thread.id,
+      );
       if (!message) throw new StoreError(`Thread #${thread.id} has no message ${messageId}.`);
       if (message.id === thread.first_message_id) throw new StoreError("The first message is the comment itself. Delete the thread instead.");
+      this.#tombstone(message.uid, "message");
       this.#run("DELETE FROM messages WHERE id = ?", message.id);
       this.#writes++;
     });
@@ -464,7 +511,7 @@ export class Store {
   }
 
   /** One thread, placed in its document's latest revision. A draft does not exist for agents. */
-  thread(threadId: number, options: ReadOptions = {}): { document: DocumentInfo; revision: StoredRevision; thread: ThreadView } {
+  thread(threadId: Ref, options: ReadOptions = {}): { document: DocumentInfo; revision: StoredRevision; thread: ThreadView } {
     const row = this.#threadRow(threadId);
     const document = this.#documentById(row.document_id);
     const revision = this.#latestRevision(document.id)!;
@@ -474,9 +521,167 @@ export class Store {
   }
 
   /** The document a thread is on, so callers can observe it before acting. */
-  documentOf(threadId: number): { type: string; key: string } {
+  documentOf(threadId: Ref): { type: string; key: string } {
     const document = this.#documentById(this.#threadRow(threadId).document_id);
     return { type: document.type, key: document.key };
+  }
+
+  /**
+   * Merges the store file at `source`, another copy of this store (from a
+   * second machine, say), into this one, and reports what came in. The
+   * source is only read. Run on both copies in turn, or on one copy that is
+   * then shared, it leaves them agreeing: merging is commutative and
+   * idempotent, so a sync that merges whenever both sides changed converges.
+   *
+   * - Documents match by type and key, revisions by content hash, threads
+   *   and messages by uid. A revision the source alone has takes the next
+   *   seq here, so "v3" can differ between copies; uids never do. Rows that
+   *   come in get new local integer ids, so "#12" is local to a store too.
+   * - A thread's status follows its latest change, counted by status_seq.
+   *   Of two concurrent changes (the same count), resolve wins, then
+   *   suggested, so a reopen made after seeing a resolve survives a merge,
+   *   while a resolve made at the same time as an agent's suggestion wins.
+   * - Deletes win: a thread or message either copy deleted is deleted in
+   *   both, through tombstones.
+   * - The human's drafts and pending messages stay where they were written.
+   *   Only sent messages, and threads whose first message is sent, merge.
+   * - Apps' own tables are the apps' to merge.
+   */
+  merge(source: string): MergeReport {
+    const Database = this.#db.constructor as new (file: string, options: { readOnly: boolean }) => DatabaseSync;
+    const other = new Database(source, { readOnly: true });
+    try {
+      const version = Number(
+        (other.prepare("SELECT version FROM migrations WHERE namespace = 'core'").get() as { version: number } | undefined)?.version ?? 0,
+      );
+      if (version !== CORE_MIGRATIONS.length) {
+        throw new StoreError(
+          `${source} has ${version} core migrations and this store has ${CORE_MIGRATIONS.length}. Open it with this version of peanut first, so both are migrated alike.`,
+        );
+      }
+      return this.#transaction(() => this.#mergeFrom(other));
+    } finally {
+      other.close();
+    }
+  }
+
+  #mergeFrom(other: DatabaseSync): MergeReport {
+    const report: MergeReport = { threads: 0, messages: 0, statuses: 0, deleted: 0 };
+    const read = <T>(sql: string, ...params: SQLInputValue[]) => other.prepare(sql).all(...params) as T[];
+
+    for (const t of read<{ uid: string; kind: string; deleted_at: string }>("SELECT * FROM tombstones")) {
+      this.#run("INSERT INTO tombstones (uid, kind, deleted_at) VALUES (?, ?, ?) ON CONFLICT (uid) DO NOTHING", t.uid, t.kind, t.deleted_at);
+    }
+    const dead = (uid: string) => Boolean(this.#get("SELECT 1 FROM tombstones WHERE uid = ?", uid));
+
+    // Documents and revisions first: incoming threads and messages point at them.
+    const documents = new Map<number, number>();
+    const revisions = new Map<number, number>();
+    const localRevision = (sourceId: number): number => {
+      const id = revisions.get(sourceId);
+      if (id === undefined) throw new StoreError(`The source store has no revision ${sourceId}.`);
+      return id;
+    };
+    for (const d of read<DocumentRow>("SELECT * FROM documents ORDER BY id")) {
+      const local =
+        this.document(d.type, d.key) ??
+        this.#get<DocumentRow>("INSERT INTO documents (type, key, created_at) VALUES (?, ?, ?) RETURNING *", d.type, d.key, d.created_at)!;
+      documents.set(Number(d.id), Number(local.id));
+      for (const r of read<RevisionRow>("SELECT * FROM revisions WHERE document_id = ? ORDER BY seq", d.id)) {
+        const found =
+          this.#revisionBySha(local.id, r.sha256) ??
+          this.#get<RevisionRow>(
+            `INSERT INTO revisions (document_id, seq, sha256, content, meta, observed_at)
+             VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM revisions WHERE document_id = ?), ?, ?, ?, ?) RETURNING *`,
+            local.id,
+            local.id,
+            r.sha256,
+            r.content,
+            r.meta,
+            r.observed_at,
+          )!;
+        revisions.set(Number(r.id), Number(found.id));
+      }
+    }
+
+    // Threads: new ones come in, known ones take the winning status.
+    const sentThreads = read<ThreadRow>(`SELECT t.*, f.first_message_id, f.draft, f.waiting_on FROM threads t JOIN thread_facts f ON f.thread_id = t.id WHERE NOT f.draft ORDER BY t.id`);
+    for (const t of sentThreads) {
+      if (dead(t.uid)) continue;
+      const local = this.#get<ThreadRow>("SELECT * FROM threads WHERE uid = ?", t.uid);
+      if (!local) {
+        this.#run(
+          `INSERT INTO threads (uid, document_id, revision_id, anchor_type, anchor, quote, status, status_by, status_at, status_seq, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          t.uid,
+          documents.get(Number(t.document_id))!,
+          localRevision(Number(t.revision_id)),
+          t.anchor_type,
+          t.anchor,
+          t.quote,
+          t.status,
+          t.status_by,
+          t.status_at,
+          t.status_seq,
+          t.created_at,
+        );
+        report.threads++;
+      } else if (statusWins(t, local)) {
+        this.#run("UPDATE threads SET status = ?, status_by = ?, status_at = ?, status_seq = ? WHERE id = ?", t.status, t.status_by, t.status_at, t.status_seq, local.id);
+        report.statuses++;
+      }
+    }
+
+    // Sent messages on threads this store has.
+    for (const m of read<MessageRow & { thread_uid: string; revision_id: number }>(
+      "SELECT m.*, t.uid AS thread_uid FROM messages m JOIN threads t ON t.id = m.thread_id WHERE m.sent_at IS NOT NULL ORDER BY m.id",
+    )) {
+      if (dead(m.uid) || this.#get("SELECT 1 FROM messages WHERE uid = ?", m.uid)) continue;
+      const thread = this.#get<{ id: number }>("SELECT id FROM threads WHERE uid = ?", m.thread_uid);
+      if (!thread) continue;
+      this.#run(
+        `INSERT INTO messages (uid, thread_id, revision_id, author, author_kind, session, body, created_at, sent_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        m.uid,
+        thread.id,
+        localRevision(Number(m.revision_id)),
+        m.author,
+        m.author_kind,
+        m.session,
+        m.body,
+        m.created_at,
+        m.sent_at,
+      );
+      report.messages++;
+    }
+
+    // Deletes either copy made.
+    for (const { uid, kind } of this.#all<{ uid: string; kind: string }>("SELECT uid, kind FROM tombstones")) {
+      if (kind === "thread") {
+        const thread = this.#get<{ id: number; document_id: number }>("SELECT id, document_id FROM threads WHERE uid = ?", uid);
+        if (thread) {
+          this.#deleteThreadRows(thread.id, thread.document_id);
+          report.deleted++;
+        }
+      } else if (Number(this.#run("DELETE FROM messages WHERE uid = ?", uid))) {
+        report.deleted++;
+      }
+    }
+
+    // A document whose every thread was a draft there, or deleted here, came over empty.
+    for (const id of documents.values()) {
+      if (!this.#get("SELECT 1 FROM threads WHERE document_id = ?", id)) {
+        this.#run("DELETE FROM revisions WHERE document_id = ?", id);
+        this.#run("DELETE FROM documents WHERE id = ?", id);
+      }
+    }
+
+    if (report.threads || report.messages || report.statuses || report.deleted) this.#writes++;
+    return report;
+  }
+
+  #tombstone(uid: string, kind: "thread" | "message"): void {
+    this.#run("INSERT INTO tombstones (uid, kind, deleted_at) VALUES (?, ?, ?) ON CONFLICT (uid) DO NOTHING", uid, kind, now());
   }
 
   // node:sqlite types every row as Record<string, SQLOutputValue>. These name the shape each query returns.
@@ -510,7 +715,7 @@ export class Store {
     return result;
   }
 
-  #setStatus(threadId: number, status: Status, author: Author, body: string | undefined, { pending }: { pending: boolean }): void {
+  #setStatus(threadId: Ref, status: Status, author: Author, body: string | undefined, { pending }: { pending: boolean }): void {
     if (pending && author.kind !== "human") throw new StoreError("Only a human batches comments.");
     if (!Object.hasOwn(STATUS_LABELS, status)) throw new StoreError(`Unknown status "${status}".`);
     const allowedFrom = TRANSITIONS[author.kind]?.[status];
@@ -564,14 +769,14 @@ export class Store {
     return { type: document.type, key: document.key, displayName: type.displayName(document.key) };
   }
 
-  #threadRow(id: number): ThreadRow {
-    const row = this.#get<ThreadRow>(`${THREAD_ROW} WHERE t.id = ?`, Number(id));
+  #threadRow(id: Ref): ThreadRow {
+    const row = isId(id) ? this.#get<ThreadRow>(`${THREAD_ROW} WHERE t.id = ?`, Number(id)) : this.#get<ThreadRow>(`${THREAD_ROW} WHERE t.uid = ?`, String(id));
     if (!row) throw new StoreError(`No thread #${id}.`);
     return row;
   }
 
   /** A thread's row, refusing agents a thread that is still a human's draft, as if it did not exist. */
-  #visibleThreadRow(id: number, author: Author): ThreadRow {
+  #visibleThreadRow(id: Ref, author: Author): ThreadRow {
     const row = this.#threadRow(id);
     if (author.kind !== "human" && row.draft) throw new StoreError(`No thread #${id}.`);
     return row;
@@ -606,8 +811,9 @@ export class Store {
   #insertMessage(threadId: number, revisionId: number, body: string, author: Author, pending = false): void {
     const at = now();
     this.#run(
-      `INSERT INTO messages (thread_id, revision_id, author, author_kind, session, body, created_at, sent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (uid, thread_id, revision_id, author, author_kind, session, body, created_at, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      randomUUID(),
       threadId,
       revisionId,
       author.name,
@@ -620,7 +826,7 @@ export class Store {
   }
 
   #updateStatus(threadId: number, status: Status, author: Author): void {
-    this.#run("UPDATE threads SET status = ?, status_by = ?, status_at = ? WHERE id = ?", status, author.name, now(), threadId);
+    this.#run("UPDATE threads SET status = ?, status_by = ?, status_at = ?, status_seq = status_seq + 1 WHERE id = ?", status, author.name, now(), threadId);
   }
 
   #messagesFor(threadIds: number[]): Map<number, Message[]> {
@@ -635,6 +841,7 @@ export class Store {
     for (const m of rows) {
       byThread.get(Number(m.thread_id))?.push({
         id: Number(m.id),
+        uid: m.uid,
         author: m.author,
         authorKind: m.author_kind,
         session: m.session,
@@ -685,6 +892,7 @@ export class Store {
       const all = messages.get(Number(row.id)) ?? [];
       const view: ThreadView = {
         id: Number(row.id),
+        uid: row.uid,
         status: row.status,
         pending: Boolean(row.draft),
         waitingOn: row.waiting_on,
