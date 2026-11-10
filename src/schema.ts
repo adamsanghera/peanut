@@ -14,6 +14,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Registry } from "./registry.ts";
 
+/** A random version 4 UUID, made by SQLite, the same shape as crypto.randomUUID(). */
+const UUID_SQL =
+  "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || " +
+  "substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))";
+
 /** The core's steps. Append; never edit a step that has shipped. */
 export const CORE_MIGRATIONS: readonly string[] = [
   `
@@ -80,7 +85,35 @@ LEFT JOIN messages last ON last.id = (
   SELECT id FROM messages WHERE thread_id = t.id AND sent_at IS NOT NULL ORDER BY sent_at DESC, id DESC LIMIT 1
 );
 `,
+  // 2: stable ids, so stores on different machines can be merged (Store.merge).
+  // Integer ids stay the primary keys and what apps and URLs name, so nothing
+  // that refers to "#12" changes. uid is a random UUID that is the same in
+  // every copy of the store. The triggers give a uid to rows that code from
+  // before this step inserts, so a process still running it keeps working.
+  // status_seq counts status changes, so a merge can tell a later reopen
+  // from a concurrent resolve. Tombstones carry deletes across a merge.
+  `
+ALTER TABLE threads ADD COLUMN uid TEXT;
+ALTER TABLE threads ADD COLUMN status_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN uid TEXT;
+UPDATE threads SET uid = ${UUID_SQL} WHERE uid IS NULL;
+UPDATE messages SET uid = ${UUID_SQL} WHERE uid IS NULL;
+UPDATE threads SET status_seq = 1 WHERE status_at IS NOT NULL;
+CREATE UNIQUE INDEX threads_by_uid ON threads (uid);
+CREATE UNIQUE INDEX messages_by_uid ON messages (uid);
+CREATE TRIGGER threads_get_uid AFTER INSERT ON threads WHEN NEW.uid IS NULL
+BEGIN UPDATE threads SET uid = ${UUID_SQL} WHERE id = NEW.id; END;
+CREATE TRIGGER messages_get_uid AFTER INSERT ON messages WHEN NEW.uid IS NULL
+BEGIN UPDATE messages SET uid = ${UUID_SQL} WHERE id = NEW.id; END;
+CREATE TABLE tombstones (
+  uid        TEXT PRIMARY KEY,       -- of a deleted thread or message
+  kind       TEXT NOT NULL CHECK (kind IN ('thread', 'message')),
+  deleted_at TEXT NOT NULL
+);
+`,
 ];
+
+
 
 const MIGRATIONS_TABLE = `CREATE TABLE IF NOT EXISTS migrations (
   namespace TEXT PRIMARY KEY,
